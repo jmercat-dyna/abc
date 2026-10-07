@@ -302,7 +302,7 @@ def _count_box_sample_prompt(
 
 
 class CountIntoOpaqueBoxRandomizer(SceneRandomizer):
-    """Reload count_into_opaque_box with sampled primitive objects and prompt."""
+    """Sample objects while respecting the bound task spec's counting goal."""
 
     perturbations: list = []
 
@@ -361,14 +361,29 @@ class CountIntoOpaqueBoxRandomizer(SceneRandomizer):
     ) -> RandomizationState:
         rng = np.random.default_rng(seed)
         selections = self._sample_selections(rng)
-        prompt_info = _count_box_sample_prompt(selections, rng)
+        env = self._env_ref
+        spec = env._task_spec if env is not None else None
+        if spec is not None and spec.fixed_count is not None:
+            count = spec.fixed_count
+            if not 1 <= count <= len(selections):
+                raise ValueError(f"fixed_count must be between 1 and {len(selections)}, got {count}")
+            prompt_info = {
+                # Preserve the caller's static task prompt, including any sim prefix.
+                "prompt": env.prompt,
+                "prompt_type": "exact_count",
+                "target_count": count,
+                "target_objects": [],
+                "eligible_objects": [obj["name"] for obj in selections],
+                "attributes": {},
+            }
+        else:
+            prompt_info = _count_box_sample_prompt(selections, rng)
         xml = _count_box_build_xml(selections)
         xml = _count_box_apply_scene_transforms(
             xml,
             self._scene_xml_transform_options,
         )
 
-        env = self._env_ref
         if env is not None:
             preserved_arm_state = env._get_reset_arm_state()
             env.reload_from_xml(xml)

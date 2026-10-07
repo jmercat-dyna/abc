@@ -475,6 +475,24 @@ Two reading notes when comparing against those numbers:
   and hang-mug as `--prompt "sim hang the mug on the mug rack"`. Mug flip,
   dishrack, and sweep defaults already match training.
 
+## Counting tasks
+
+The explicit `count_one_into_opaque_box` through `count_four_into_opaque_box`
+tasks keep their selected count on every reset, including when selected by an
+alias. Their `SimTaskSpec.fixed_count` field defines the goal. The scene
+randomizer samples objects and placements, then uses that goal for both the
+instruction and evaluator metadata. All sampled objects are eligible, regardless
+of color or shape. A caller-supplied static prompt (such as a `sim ` prefix) is
+preserved.
+
+The general `count_into_opaque_box` task has `fixed_count=None` and continues to
+sample count, color, size, and shape instructions per episode. To add another
+fixed count, add a task spec with its prompt, aliases, and `fixed_count`; the
+randomizer has no list of task names to update. Counts must fit the sampled scene.
+
+Regression checks: `python -m pytest abc_sim/randomization/tasks/count_box_test.py`.
+The reset and scoring checks require YAM assets (`prepare.py --sim-task count_into_opaque_box`).
+
 ## Assets
 
 Large simulator meshes and textures are not committed to git. They ship as 37

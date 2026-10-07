@@ -24,6 +24,8 @@ class SimTaskSpec:
     aliases: tuple[str, ...] = ()
     evaluator_name: str | None = None
     evaluator_options: tuple[tuple[str, object], ...] = ()
+    # None samples a directive each episode; an integer fixes the counting goal.
+    fixed_count: int | None = None
 
     def evaluator_kwargs(self) -> dict[str, object]:
         """Return evaluator options as a plain kwargs dict."""
@@ -89,6 +91,7 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
     ),
     SimTaskSpec(
         name="count_one_into_opaque_box",
+        fixed_count=1,
         env_task="count_into_opaque_box",
         evaluator_name="count_into_opaque_box",
         prompt="put exactly one object in the opaque box",
@@ -102,6 +105,7 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
     ),
     SimTaskSpec(
         name="count_two_into_opaque_box",
+        fixed_count=2,
         env_task="count_into_opaque_box",
         evaluator_name="count_into_opaque_box",
         prompt="put exactly two objects in the opaque box",
@@ -115,6 +119,7 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
     ),
     SimTaskSpec(
         name="count_three_into_opaque_box",
+        fixed_count=3,
         env_task="count_into_opaque_box",
         evaluator_name="count_into_opaque_box",
         prompt="put exactly three objects in the opaque box",
@@ -128,6 +133,7 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
     ),
     SimTaskSpec(
         name="count_four_into_opaque_box",
+        fixed_count=4,
         env_task="count_into_opaque_box",
         evaluator_name="count_into_opaque_box",
         prompt="put exactly four objects in the opaque box",
