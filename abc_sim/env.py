@@ -563,6 +563,14 @@ class MuJoCoYAMEnv(gym.Env):
         """Configure the task name and attach any registered evaluator."""
 
         resolved = resolve_task(task)
+        if (
+            self._task_request
+            and resolved.task_spec is not None
+            and resolved.task_spec != self._task_spec
+        ):
+            # Preserve the constructor's prompt override on initial setup, but
+            # never carry the previous task's instruction into a new goal.
+            self.prompt = resolved.task_spec.prompt
         self._task_request = task
         self._task = resolved.env_task or task
         self._task_spec = resolved.task_spec or maybe_get_task_spec(task)

@@ -94,3 +94,33 @@ def test_fixed_and_general_tasks_sample_the_same_objects_without_sharing_goals()
     finally:
         fixed.close()
         general.close()
+
+
+@requires_assets
+def test_switching_count_tasks_updates_the_instruction_and_goal_together() -> None:
+    env = make_env(
+        task=FIXED_SPECS[0].name,
+        prompt="sim " + FIXED_SPECS[0].prompt,
+        render_cameras=False,
+    )
+    try:
+        # Resolving a different alias of the same task preserves an explicit override.
+        env.set_task(FIXED_SPECS[0].aliases[0])
+        observation, _ = env.reset(seed=42, randomize=True)
+        assert observation["prompt"] == "sim " + FIXED_SPECS[0].prompt
+        for task in (
+            FIXED_SPECS[1].name,
+            "count_into_opaque_box",
+            FIXED_SPECS[2].name,
+        ):
+            env.set_task(task)
+            observation, info = env.reset(seed=42, randomize=True)
+            spec = get_task_spec(task)
+            if spec.fixed_count is None:
+                assert observation["prompt"] == "put exactly 2 objects in the box"
+            else:
+                assert observation["prompt"] == spec.prompt
+                assert info["randomization"].metadata["target_count"] == spec.fixed_count
+                assert_exact_success(env, spec.fixed_count)
+    finally:
+        env.close()
