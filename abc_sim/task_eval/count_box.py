@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import mujoco
 import numpy as np
@@ -17,7 +18,9 @@ class CountIntoOpaqueBoxEvaluator:
     Success requires exactly ``target_count`` eligible objects and no
     ineligible objects in the geometry-derived interior. Success is not
     latched because a rollout may later overfill the box; ``ever_correct``
-    records whether the count was ever right.
+    records whether the count was ever right. Inserting excess eligible or any
+    ineligible objects below the lid is treated as a terminal failure: policies
+    cannot recover by later removing or knocking them back out.
     """
 
     def __init__(
@@ -50,6 +53,8 @@ class CountIntoOpaqueBoxEvaluator:
     def reset(self, *, nworld: int = 1) -> None:
         self._nworld = int(nworld)
         self._ever_correct = np.zeros((self._nworld,), dtype=bool)
+        self._ever_failed = np.zeros((self._nworld,), dtype=bool)
+        self._failure_reason = np.full((self._nworld,), "", dtype="<U32")
 
     def configure_from_randomization(
         self,
@@ -228,7 +233,10 @@ class CountIntoOpaqueBoxEvaluator:
                 success=np.zeros((batch,), dtype=bool),
                 metrics={
                     "goal_configured": False,
-                    "ever_failed": np.zeros((batch,), dtype=bool),
+                    "success_semantics": "final_state_until_terminal_failure",
+                    "ever_failed": self._ever_failed.copy(),
+                    "terminal_failure": self._ever_failed.copy(),
+                    "failure_reason": self._failure_reason.copy(),
                     "ever_success": np.zeros((batch,), dtype=bool),
                 },
             )
@@ -253,8 +261,20 @@ class CountIntoOpaqueBoxEvaluator:
         target = directive["target_count"]
         num_eligible_in = (inside & eligible[None, :]).sum(axis=1).astype(np.int32)
         num_ineligible_in = (inside & ~eligible[None, :]).sum(axis=1).astype(np.int32)
-        success = (num_eligible_in == target) & (num_ineligible_in == 0)
-        self._ever_correct |= success
+        current_correct = (num_eligible_in == target) & (num_ineligible_in == 0)
+        self._ever_correct |= current_correct
+        overfilled = num_eligible_in > target
+        wrong_objects = num_ineligible_in > 0
+        invalid_insertion = overfilled | wrong_objects
+        newly_failed = invalid_insertion & ~self._ever_failed
+        reasons = np.where(
+            overfilled & wrong_objects,
+            "overfill_and_ineligible",
+            np.where(overfilled, "eligible_overfill", "ineligible_object"),
+        )
+        self._failure_reason[newly_failed] = reasons[newly_failed]
+        self._ever_failed |= invalid_insertion
+        success = current_correct & ~self._ever_failed
 
         # Progress: each eligible object toward the target earns credit; every
         # object past it, and every off-directive object, costs the same.
@@ -264,6 +284,7 @@ class CountIntoOpaqueBoxEvaluator:
             credit.astype(np.float32) / float(max(target, 1)), 0.0, 1.0
         )
         reward = np.where(success, 1.0, np.minimum(reward, 0.99)).astype(np.float32)
+        reward = np.where(self._ever_failed, 0.0, reward).astype(np.float32)
 
         in_box = [
             [name for name, is_in in zip(directive["names"], world) if bool(is_in)]
@@ -279,9 +300,12 @@ class CountIntoOpaqueBoxEvaluator:
                 "num_eligible_in_box": num_eligible_in,
                 "num_ineligible_in_box": num_ineligible_in,
                 "objects_in_box": in_box,
-                # Final-state semantics: never stop a rollout early on a count
-                # that may still change, and let the last frame decide.
-                "ever_failed": np.zeros((batch,), dtype=bool),
+                # A correct count remains final-state success; invalid contents
+                # below the lid terminate immediately and cannot be undone.
+                "success_semantics": "final_state_until_terminal_failure",
+                "ever_failed": self._ever_failed.copy(),
+                "terminal_failure": self._ever_failed.copy(),
+                "failure_reason": self._failure_reason.copy(),
                 "ever_success": success.copy(),
                 "ever_correct": self._ever_correct.copy(),
                 "box_x_bounds": list(self._box_x_bounds),

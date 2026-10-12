@@ -27,6 +27,7 @@ from abc_minimal.eval_policy import (
     progress_text,
     video_frame,
     without_missing_counts,
+    world_success_flags,
 )
 from abc_sim.batched_env import BatchedWarpYAMEnv
 from abc_sim.task_eval import TaskEvalResult
@@ -302,11 +303,14 @@ def rollout_batched_worlds(
             wall_s = time.perf_counter() - t0
             for index, world_index in enumerate(batch):
                 final_eval = world_eval(last_result[index], index, keys)
+                success, final_success = world_success_flags(
+                    final_eval, failed=bool(diverged[index])
+                )
                 world = {
                     "world_index": world_index,
                     "world_seed": env.seeds[index],
-                    "success": bool(final_eval["ever_success"]),
-                    "final_success": bool(final_eval["success"]),
+                    "success": success,
+                    "final_success": final_success,
                     "reward": float(final_eval["reward"]),
                     "max_reward": float(max_reward[index]),
                     "steps": int(steps[index]),

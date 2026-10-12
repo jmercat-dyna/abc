@@ -507,6 +507,24 @@ randomizer has no list of task names to update. Counts must fit the sampled scen
 Regression checks: `python -m pytest abc_sim/randomization/tasks/count_box_test.py`.
 The reset and scoring checks require YAM assets (`prepare.py --sim-task count_into_opaque_box`).
 
+Counting retains final-state success: reaching the exact count does not end an
+episode. Inserting more eligible objects than requested, or any ineligible
+object, into the measured interior below the lid ends the episode as failure.
+This treats insertion as committed: removing an object later cannot recover
+the episode. Objects above the ceiling/on the lid or outside the box do not
+trigger this criterion. It does not attempt to prove physical irreversibility.
+
+`ever_failed` and `terminal_failure` latch independently for each world.
+`failure_reason` records the first cause (`eligible_overfill`,
+`ineligible_object`, or `overfill_and_ineligible`); `ever_correct` still records
+whether the requested contents were ever present. Native scalar and batched
+rollouts stop failed worlds and ensure terminal failure overrides reported
+success. Reset/model reload clears failure history. These stop rules change
+the evaluation protocol; historical final-state results may differ.
+
+Asset-free geometry, insertion trajectory, per-world stopping, and reload
+regressions: `python -m pytest -q abc_sim/task_eval/count_box_test.py`.
+
 ## Assets
 
 Large simulator meshes and textures are not committed to git. They ship as 37

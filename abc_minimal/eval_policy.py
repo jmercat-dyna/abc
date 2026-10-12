@@ -236,6 +236,17 @@ def rollout_over(task_eval: dict[str, Any]) -> bool:
     return bool(task_eval["ever_success"])
 
 
+def world_success_flags(
+    task_eval: dict[str, Any], *, failed: bool = False
+) -> tuple[bool, bool]:
+    """Terminal failure overrides both historical and current success flags."""
+    failed = failed or bool(task_eval.get("ever_failed", False))
+    return (
+        bool(task_eval["ever_success"]) and not failed,
+        bool(task_eval["success"]) and not failed,
+    )
+
+
 def progress_text(task_eval: dict[str, Any], bottles_key: str) -> str:
     """Progress for one rollout: the bottles counter, or reward for other tasks."""
     count = task_eval.get(bottles_key)
@@ -771,11 +782,12 @@ def rollout_worlds(
                 if video is not None:
                     video.close()
 
+            success, final_success = world_success_flags(final_eval)
             world = {
                 "world_index": world_index,
                 "world_seed": seed,
-                "success": bool(final_eval["ever_success"]),
-                "final_success": bool(final_eval["success"]),
+                "success": success,
+                "final_success": final_success,
                 "reward": float(final_eval["reward"]),
                 "max_reward": float(max_reward),
                 "steps": steps,

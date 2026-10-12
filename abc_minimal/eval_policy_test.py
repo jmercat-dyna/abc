@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from abc_minimal.batched_eval import over
-from abc_minimal.eval_policy import rollout_over
+from abc_minimal.eval_policy import rollout_over, world_success_flags
 from abc_sim.task_eval.base import TaskEvalResult
 
 
@@ -49,3 +49,19 @@ def test_legacy_maintenance_does_not_terminate_at_reset():
 def test_regular_task_still_terminates_on_success():
     assert rollout_over({"ever_success": True})
     assert not rollout_over({"ever_success": False})
+
+
+@pytest.mark.parametrize(
+    "evaluator_failed, diverged", [(True, False), (False, True), (True, True)]
+)
+def test_world_reports_mask_conflicting_success_on_terminal_failure(
+    evaluator_failed, diverged
+):
+    assert world_success_flags(
+        {"success": True, "ever_success": True, "ever_failed": evaluator_failed},
+        failed=diverged,
+    ) == (False, False)
+
+
+def test_world_reports_preserve_success_without_terminal_failure():
+    assert world_success_flags({"success": True, "ever_success": True}) == (True, True)
