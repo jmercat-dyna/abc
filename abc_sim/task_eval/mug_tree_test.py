@@ -389,3 +389,91 @@ def test_threading_geometry_is_cached_only_within_one_sample(monkeypatch):
     second = evaluator.evaluate_model_data(model, data)
     assert not second.scalar_success()
     assert len(calls) == 2
+
+
+def test_light_trunk_bracing_does_not_reject_genuine_handle_support():
+    root = ET.fromstring(BASE_XML)
+    tree = root.find("worldbody/body[@name='mug_tree']")
+    ET.SubElement(
+        tree,
+        "geom",
+        name="trunk_brace",
+        type="sphere",
+        size=".006",
+        pos=".04 .0909 .075",
+        friction=".02 0 0",
+        priority="2",
+    )
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    live = evaluator.evaluate_model_data(model, data)
+    assert live.scalar_success()
+    assert live.metrics["mug_threaded_peg"][0, 0]
+    assert live.metrics["mug_rack_brace_contact"][0, 0]
+    assert not live.metrics["mug_other_contact"][0, 0]
+    assert (
+        abs(live.metrics["mug_rack_brace_force_n"][0, 0])
+        < 0.25 * evaluator._mug_weights[0]
+    )
+    assert (
+        live.metrics["mug_peg_support_force_n"][0, 0]
+        >= evaluator.support_weight_fraction * evaluator._mug_weights[0]
+    )
+    batch = evaluator.evaluate_qpos_batch(data.qpos[None])
+    assert batch.scalar_success()
+    np.testing.assert_array_equal(batch.metrics["mug_rack_brace_contact"], [[True]])
+
+
+def test_deep_rack_bracing_still_rejects_hanging():
+    root = ET.fromstring(BASE_XML)
+    tree = root.find("worldbody/body[@name='mug_tree']")
+    ET.SubElement(
+        tree,
+        "geom",
+        name="trunk_brace",
+        type="sphere",
+        size=".006",
+        pos=".04 .087 .075",
+    )
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    result = evaluator.evaluate_model_data(model, data)
+    assert result.metrics["mug_other_contact"][0, 0]
+    assert not result.scalar_success()
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_shallow_trunk_bracing_without_threaded_peg_load_is_not_hanging():
+    root = ET.fromstring(BASE_XML)
+    tree = root.find("worldbody/body[@name='mug_tree']")
+    tree.find("geom[@name='mug_tree_peg_1']").set("fromto", "-.06 0 .2 .06 0 .2")
+    ET.SubElement(
+        tree,
+        "geom",
+        name="trunk_brace",
+        type="sphere",
+        size=".006",
+        pos=".04 .0909 .075",
+        friction=".02 0 0",
+        priority="2",
+    )
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    result = evaluator.evaluate_model_data(model, data)
+    assert result.metrics["mug_rack_brace_contact"][0, 0]
+    assert not result.metrics["mug_other_contact"][0, 0]
+    assert result.metrics["mug_peg_support_force_n"][0, 0] == 0
+    assert not result.scalar_success()
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()

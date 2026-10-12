@@ -7,6 +7,17 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 2.0.1
+
+- Allow shallow incidental trunk/base bracing alongside released, threaded
+  handle support. Verified training replays exposed false negatives when mugs
+  genuinely hung from a peg but lightly touched other rack collision pieces.
+- Retain the configured minimum peg load, empty-handle geometry and rejection
+  of table/mug-stack/gripper contact or deep rack penetration. Bracing alone
+  never counts as hanging.
+- Reuse reset MuJoCo scratch data and memoize per-sample peg geometry checks
+  without changing scoring criteria.
+
 ## 2.0.0
 
 - Require mug handles to enclose and bear load on a rack peg after release;

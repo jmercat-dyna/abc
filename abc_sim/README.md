@@ -530,8 +530,9 @@ regressions: `python -m pytest -q abc_sim/task_eval/count_box_test.py`.
 `hang_mug_on_mug_rack` requires every mug to hang independently after release.
 A rack peg must pass through an empty, enclosed handle opening and bear upward
 load on the handle. Collision checks reject table support, stacked mugs,
-robot contact, trunk/base contact, and deep mesh penetration; placing mug
-centers near the tree no longer establishes success. Live scoring uses MuJoCo
+robot contact, and deep mesh penetration. Shallow trunk/base bracing is
+permitted alongside genuine handle/peg support; bracing alone never earns
+hanging credit. Placing mug centers near the tree no longer establishes success. Live scoring uses MuJoCo
 contacts/forces; qpos batches reconstruct contacts with `mj_forward`, including
 each world's randomized static rack pose. Force values can differ during
 motion because qpos-only reconstruction does not include velocity; the settled
@@ -545,7 +546,7 @@ compiled mug variant/scale. Configurable evaluator options are
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **2.0.0**,
+`abc_sim/VERSION` now records simulator task/protocol version **2.0.1**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records

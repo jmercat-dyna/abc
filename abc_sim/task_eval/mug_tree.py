@@ -18,8 +18,9 @@ class MugOnRackEvaluator:
 
     Collision geometry determines the vessel envelope and handle opening;
     center proximity alone is only a diagnostic. A threaded peg must bear
-    upward load, and table, gripper, mug-stack or trunk/base contacts reject
-    hanging. Live and qpos-batch paths share the same contact/geometry checks.
+    upward load. Table, gripper or mug-stack contact rejects hanging; shallow
+    trunk/base bracing is permitted alongside genuine peg support. Live and
+    qpos-batch paths share the same contact/geometry checks.
     """
 
     def __init__(
@@ -249,6 +250,12 @@ class MugOnRackEvaluator:
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
         tree_bodies = self._subtree_bodies(model, self._tree_body_id)
+        self._rack_geom_ids = {
+            geom
+            for geom in range(model.ngeom)
+            if int(model.geom_bodyid[geom]) in tree_bodies
+            and (model.geom_contype[geom] or model.geom_conaffinity[geom])
+        }
         self._peg_segments: dict[int, np.ndarray] = {}
         # These six pieces are the pegs in the bundled eleven-piece rack asset.
         peg_meshes = {f"mug_tree_col_{i}" for i in (1, 2, 5, 6, 8, 9)}
@@ -436,6 +443,8 @@ class MugOnRackEvaluator:
         count = len(self.mug_names)
         forces = np.zeros(count)
         other_contact = np.zeros(count, dtype=bool)
+        rack_brace_contact = np.zeros(count, dtype=bool)
+        rack_brace_force = np.zeros(count)
         threaded = np.zeros(count, dtype=bool)
         upward = -np.asarray(model.opt.gravity) / np.linalg.norm(model.opt.gravity)
         force = np.zeros(6)
@@ -450,10 +459,21 @@ class MugOnRackEvaluator:
                 if other in geoms or contact.dist > self.geometry_tolerance_m:
                     continue
                 if (
-                    other not in self._peg_segments
+                    other not in self._rack_geom_ids
                     or contact.dist < -self.max_penetration_m
                 ):
                     other_contact[i] = True
+                    continue
+                if other not in self._peg_segments:
+                    # A hanging mug may lightly brace against the trunk/base.
+                    # It must still obtain the configured load from a peg
+                    # through its empty handle; bracing never earns that credit.
+                    rack_brace_contact[i] = True
+                    mujoco.mj_contactForce(model, data, contact_index, force)
+                    world_force = np.asarray(contact.frame).reshape(3, 3).T @ force[:3]
+                    if g1 in geoms:
+                        world_force = -world_force
+                    rack_brace_force[i] += float(world_force @ upward)
                     continue
                 pair = (i, other)
                 if pair not in threaded_checks:
@@ -484,6 +504,8 @@ class MugOnRackEvaluator:
             "mug_threaded_peg": threaded,
             "mug_peg_support_force_n": forces,
             "mug_other_contact": other_contact,
+            "mug_rack_brace_contact": rack_brace_contact,
+            "mug_rack_brace_force_n": rack_brace_force,
             "mug_hanging": supported & ~other_contact,
         }
 
