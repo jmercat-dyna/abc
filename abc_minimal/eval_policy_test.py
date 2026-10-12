@@ -254,3 +254,12 @@ def test_native_real_autoreset_is_invalid_and_video_closes_before_reset_frame(
     assert world["steps"] == 1
     assert len(frames) == 1 and closed == [True]
     assert world["video_path"] == str(tmp_path / "world_000.mp4")
+
+
+def test_nonfinite_diagnostics_use_strict_json_null():
+    from abc_minimal.eval_policy import jsonable
+    import json
+
+    output = jsonable({"unset": np.array([np.nan, np.inf]), "scalar": np.float32(np.nan)})
+    assert output == {"unset": [None, None], "scalar": None}
+    assert json.loads(json.dumps(output, allow_nan=False)) == output

@@ -123,9 +123,11 @@ class RTCManager:
 
 def jsonable(x: Any) -> Any:
     if isinstance(x, np.ndarray):
-        return x.tolist()
+        return jsonable(x.tolist())
     if isinstance(x, np.generic):
-        return x.item()
+        return jsonable(x.item())
+    if isinstance(x, float) and not np.isfinite(x):
+        return None
     if hasattr(x, "__dataclass_fields__"):
         return jsonable(asdict(x))
     if isinstance(x, dict):
