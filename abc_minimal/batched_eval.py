@@ -70,10 +70,15 @@ def rewards(result: TaskEvalResult | None, num_worlds: int) -> np.ndarray:
 
 
 def over(result: TaskEvalResult | None, num_worlds: int) -> np.ndarray:
-    """Per-world rollout_over: ever_failed for maintenance tasks, else ever_success."""
+    """Per-world termination, preserving legacy maintenance evaluator behavior."""
     if result is None:
         return np.zeros(num_worlds, dtype=bool)
-    flags = result.metrics.get("ever_failed", result.metrics.get("ever_success"))
+    if result.metrics.get("success_semantics") == "held_countdown_complete":
+        flags = np.logical_or(
+            result.metrics["ever_success"], result.metrics.get("ever_failed", False)
+        )
+    else:
+        flags = result.metrics.get("ever_failed", result.metrics.get("ever_success"))
     return np.asarray(flags, dtype=bool)
 
 

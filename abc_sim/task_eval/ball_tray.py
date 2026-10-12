@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import mujoco
 import numpy as np
 
 from abc_sim.task_eval.base import TaskEvalResult
 from abc_sim.task_specs import SimTaskSpec
 
+if TYPE_CHECKING:
+    from abc_sim.task_runtime.ball_tray import BallTrayBalancingRuntime
+
 
 class BallTrayBalancingEvaluator:
-    """Score whether the ball has remained on the open tray."""
+    """Require a completed held countdown with the ball still on the tray."""
 
     def __init__(
         self,
@@ -24,6 +29,7 @@ class BallTrayBalancingEvaluator:
         dropped_local_z_threshold_m: float = 0.008,
     ) -> None:
         self.spec = spec
+        self._runtime: BallTrayBalancingRuntime | None = None
         self._ball_joint_name = ball_joint_name
         self._tray_site_name = tray_site_name
         self._usable_half_extents = np.asarray(usable_half_extents_m, dtype=np.float32)
@@ -50,6 +56,11 @@ class BallTrayBalancingEvaluator:
         self._nworld = int(nworld)
         self._alive = np.ones((self._nworld,), dtype=bool)
         self._ever_failed = np.zeros((self._nworld,), dtype=bool)
+        self._ever_success = np.zeros((self._nworld,), dtype=bool)
+
+    def bind_runtime(self, runtime: BallTrayBalancingRuntime) -> None:
+        """Use the environment's contact/countdown state, not qpos alone."""
+        self._runtime = runtime
 
     def configure_from_randomization(
         self,
@@ -170,19 +181,24 @@ class BallTrayBalancingEvaluator:
         tray_radius = max(float(np.linalg.norm(self._usable_half_extents)), 1e-6)
         reward = np.clip(1.0 - center_error / tray_radius, 0.0, 1.0).astype(np.float32)
         reward = np.where(self._alive, reward, 0.0).astype(np.float32)
+        runtime_state = self._runtime.debug_state() if self._runtime is not None else {}
+        handles_held = bool(runtime_state.get("handles_held", False))
+        countdown_complete = bool(runtime_state.get("complete", False))
+        success = self._alive & handles_held & countdown_complete
+        self._ever_success |= success
 
         return TaskEvalResult(
             reward=reward,
-            success=self._alive.copy(),
+            success=success,
             metrics={
                 **metrics,
                 "current_balanced": current_balanced.copy(),
                 "alive": self._alive.copy(),
                 "ever_failed": self._ever_failed.copy(),
-                # Balancing is a maintenance task, so the episode counts as a
-                # success for as long as it has not yet dropped the ball. The
-                # rollout loops read ever_success by key on every action.
-                "ever_success": np.logical_not(self._ever_failed),
+                "ever_success": self._ever_success.copy(),
+                "success_semantics": "held_countdown_complete",
+                "handles_held": handles_held,
+                "countdown_complete": countdown_complete,
                 "usable_half_extents_m": np.broadcast_to(
                     self._usable_half_extents,
                     (self._nworld, 2),

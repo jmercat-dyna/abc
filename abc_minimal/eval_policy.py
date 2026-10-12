@@ -225,14 +225,12 @@ def resolve_prefix_length(
 def rollout_over(task_eval: dict[str, Any]) -> bool:
     """Whether a rollout has nothing left to do and can stop before its budget.
 
-    For most tasks that is the first success: once the bottles are in the bin,
-    stepping on only burns wall clock. A maintenance task is the other way round
-    -- ball_tray_balancing reports ``ever_failed`` and defines ``ever_success``
-    as "has not dropped the ball yet", so it is already succeeding at reset and
-    is over only once it fails. Stopping such a task on ``ever_success`` ends it
-    on step one and scores a 15-second balance on a single simulator step, so
-    ``ever_failed`` is the signal when the evaluator reports one.
+    Most tasks stop at first success. Held-countdown balancing also stops when
+    its countdown completes, or when the ball drops. Legacy maintenance
+    evaluators define ever_success as "not yet failed" and stop only on failure.
     """
+    if task_eval.get("success_semantics") == "held_countdown_complete":
+        return bool(task_eval["ever_success"] or task_eval.get("ever_failed", False))
     if "ever_failed" in task_eval:
         return bool(task_eval["ever_failed"])
     return bool(task_eval["ever_success"])

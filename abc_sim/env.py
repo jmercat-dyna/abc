@@ -242,14 +242,14 @@ class MuJoCoYAMEnv(gym.Env):
         self._scene_xml_string = xml_string
         self._close_camera_backend()
         self.setup_model()
-        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
+        self._configure_task_evaluator()
 
     def reload_from_model(self, model: mujoco.MjModel) -> None:
         """Swap in a copy of an already-compiled MuJoCo model."""
         self._scene_xml_string = None
         self._close_camera_backend()
         self._bind_model(copy.deepcopy(model))
-        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
+        self._configure_task_evaluator()
 
     def _reset_camera_backend(self) -> None:
         if self._camera_provider is not None:
@@ -574,12 +574,19 @@ class MuJoCoYAMEnv(gym.Env):
         self._task_request = task
         self._task = resolved.env_task or task
         self._task_spec = resolved.task_spec or maybe_get_task_spec(task)
-        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
         self._task_runtime = make_task_runtime(
             resolved.task_spec or self._task,
             self.model,
             self.data,
         )
+        self._configure_task_evaluator()
+
+    def _configure_task_evaluator(self) -> None:
+        """Create the scorer and attach its runtime after setup or model swaps."""
+        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
+        bind_runtime = getattr(self._task_evaluator, "bind_runtime", None)
+        if bind_runtime is not None and self._task_runtime is not None:
+            bind_runtime(self._task_runtime)
 
     def task_runtime_debug_state(self) -> dict[str, Any] | None:
         """Return task runtime diagnostics, when a runtime is attached."""

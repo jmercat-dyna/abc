@@ -274,11 +274,26 @@ real measurement. The unscored four — `put_markers_in_top_drawer`,
 score themselves: they warn at startup and report reward 0 and success 0
 throughout. Watch the videos to judge those.
 
-One task is scored differently: `ball_tray_balancing` is a maintenance task
-(success means the ball has not been dropped yet), so its rollouts run the full
-chunk budget and its `success_rate` is only comparable between runs with equal
-`--num-chunks` — a 10-chunk run asks the policy to hold the ball for 5 seconds,
-a 30-chunk run for 15.
+`ball_tray_balancing` succeeds only when both grippers hold distinct tray
+handles for the sampled countdown (10–15 seconds) and the ball never leaves
+the usable tray area. Contact gaps up to 0.1 seconds are tolerated; longer
+gaps reset the countdown. Native eval stops on completion or ball failure.
+The evaluator reports `success_semantics: held_countdown_complete`,
+`handles_held`, and `countdown_complete`; qpos without a bound task runtime
+cannot establish success. Earlier releases scored survival alone, including
+untouched trays, so their success rates are not comparable to this criterion.
+
+`put_relative` rejects startup prompts already satisfying the evaluator's
+directional placement band, using the same float32 geometry and the positions
+serialized into the generated scene XML. Transient layout/prompt failures
+retry within randomization; exhaustion raises `RandomizationSamplingError`
+for an outer eval retry. Asset/XML errors remain permanent errors.
+
+Asset-free regression checks for these invariants and native termination:
+```bash
+python -m pytest -q abc_sim/task_eval/ball_tray_test.py \
+  abc_sim/randomization/tasks/put_relative_test.py abc_minimal/eval_policy_test.py
+```
 
 Task names, aliases, and prompts are listed in `abc_sim/task_specs.py`, and an
 unrecognized `--task` fails immediately with the full catalogue in the error.
@@ -404,9 +419,9 @@ Rows before the conveyor retrain were measured under MuJoCo 3.6; the repo now
 pins 3.8, and contact-heavy tasks are sensitive to the engine step (the
 dishrack 20k checkpoint re-measures at 12/20 on seed A under 3.8).
 
-Reading notes: ball_tray is the maintenance task -- every world earned full
-hold-duration credit but the strict criterion asks the policy to hold roughly
-4x longer than any demonstration, so its zero is a horizon artifact. lego is
+Reading notes: the ball_tray row used the historical survival-only evaluator,
+whose full instantaneous progress did not establish grasping or countdown
+completion. Re-evaluate those checkpoints with the corrected scorer. lego is
 the opposite case: 73% of its demonstrations are longer than the default
 236-chunk budget, so its row is measured at `--num-chunks 400` (its published
 eval summaries too); at the default budget every world times out mid-sort. The
@@ -464,10 +479,9 @@ Two reading notes when comparing against those numbers:
   knocked back out, or still touching the gripper at the end, subtracts from
   `mean_reward` but not from `mean_max_progress`). `success_rate` is stricter
   than both: every object placed simultaneously, at any instant. On a
-  maintenance task (one that reports `ever_failed`, like
-  `ball_tray_balancing`) the reading flips: progress starts maximal and can
-  only be lost, so `mean_max_progress` reads ≈1.0 regardless of when the ball
-  drops — read `success_rate` there.
+  ball-tray task, the centering reward can start maximal even without a grasp,
+  so `mean_max_progress` reads ≈1.0 regardless of whether the countdown
+  completes — read `success_rate` and `countdown_complete` there.
 - Training remaps some sim task names before they become prompts, so two
   catalogue tasks read best under a prompt that differs from their spec
   default. For checkpoints trained on the xdof + sim mixtures: the put-bottles

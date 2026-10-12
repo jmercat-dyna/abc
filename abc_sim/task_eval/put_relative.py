@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import mujoco
 import numpy as np
 
+from abc_sim.put_relative_geometry import (
+    ALONG_MAX_M,
+    ALONG_MIN_M,
+    PERP_MAX_M,
+    relative_placement_geometry,
+)
 from abc_sim.task_eval.base import TaskEvalResult
 from abc_sim.task_specs import SimTaskSpec
 
@@ -42,9 +49,9 @@ class PutRelativeEvaluator:
         *,
         model: mujoco.MjModel,
         spec: SimTaskSpec,
-        along_min_m: float = 0.06,
-        along_max_m: float = 0.30,
-        perp_max_m: float = 0.08,
+        along_min_m: float = ALONG_MIN_M,
+        along_max_m: float = ALONG_MAX_M,
+        perp_max_m: float = PERP_MAX_M,
         placed_z_tolerance_m: float = 0.03,
     ) -> None:
         self.spec = spec
@@ -149,14 +156,11 @@ class PutRelativeEvaluator:
         goal = self._goal
         mover_pos = qpos_batch[:, goal["mover_adr"] : goal["mover_adr"] + 3]
         reference_pos = qpos_batch[:, goal["reference_adr"] : goal["reference_adr"] + 3]
-        rel = mover_pos[:, :2] - reference_pos[:, :2]
-        axis = goal["axis"]
-        along = rel @ axis
-        perp = np.abs(rel @ np.asarray([-axis[1], axis[0]], dtype=np.float32))
-        in_cone = (
-            (along >= self.along_min_m)
-            & (along <= self.along_max_m)
-            & (perp <= self.perp_max_m)
+        along, perp, in_cone = relative_placement_geometry(
+            mover_pos[:, :2], reference_pos[:, :2], goal["axis"],
+            along_min_m=self.along_min_m,
+            along_max_m=self.along_max_m,
+            perp_max_m=self.perp_max_m,
         )
 
         if goal["spawn_z"] is None:

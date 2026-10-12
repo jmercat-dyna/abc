@@ -44,6 +44,7 @@ class BallTrayBalancingRuntime:
         self._remaining_s: float | None = None
         self._display_prompt = "Grab both tray handles"
         self._state = "waiting_for_handles"
+        self._handles_held = False
         self._contacted_handles: dict[str, tuple[str, ...]] = {"left": (), "right": ()}
         self._perturbation_rng = np.random.default_rng(0)
         self._next_perturbation_at_s: float | None = None
@@ -94,6 +95,7 @@ class BallTrayBalancingRuntime:
         self._remaining_s = float(self._duration_s)
         self._display_prompt = "Grab both tray handles"
         self._state = "waiting_for_handles"
+        self._handles_held = False
         self._contacted_handles = {"left": (), "right": ()}
         seed = int(getattr(randomization, "seed", 0) or 0)
         self._perturbation_rng = np.random.default_rng(seed)
@@ -145,6 +147,15 @@ class BallTrayBalancingRuntime:
             self._last_both_handles_contact_at_s is not None
             and now_s - self._last_both_handles_contact_at_s <= _HANDLE_CONTACT_GRACE_S
         )
+        self._handles_held = handles_held
+        # A brief contact flicker is tolerated, but letting go must not earn
+        # countdown time while the tray rests on the table.
+        if self._started_at_s is not None and not handles_held:
+            self._started_at_s = None
+            self._deadline_s = None
+            self._grip_detected_at_s = None
+            self._next_perturbation_at_s = None
+            self._active_perturbation_until_s = None
         self._maybe_schedule_perturbation(now_s, handles_held)
         self._update_display(now_s, both_posts_gripped)
 
@@ -159,6 +170,7 @@ class BallTrayBalancingRuntime:
             "started": self._started_at_s is not None,
             "complete": self._state == "complete",
             "both_posts_gripped": self._both_posts_gripped(self._contacted_handles),
+            "handles_held": self._handles_held,
             "left_contacted_handles": self._contacted_handles["left"],
             "right_contacted_handles": self._contacted_handles["right"],
             "perturbation_interval_s": _PERTURBATION_INTERVAL_S,
