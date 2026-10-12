@@ -477,3 +477,76 @@ def test_shallow_trunk_bracing_without_threaded_peg_load_is_not_hanging():
     assert result.metrics["mug_peg_support_force_n"][0, 0] == 0
     assert not result.scalar_success()
     assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_shallow_tangency_between_independently_hanging_mugs_is_allowed():
+    model, data, evaluator = scene(count=2)
+    second = evaluator._mug_qpos_addrs[1]
+    data.qpos[second : second + 3] = [-0.0199, 0.055, 0.2859]
+    result = score((model, data, evaluator))
+    assert result["success"]
+    assert result["mug_peer_contact"] == [True, True]
+    assert result["mug_threaded_peg"] == [True, True]
+    assert result["mug_other_contact"] == [False, False]
+    assert all(
+        force >= evaluator.support_weight_fraction * weight
+        for force, weight in zip(
+            result["mug_peg_support_force_n"], evaluator._mug_weights
+        )
+    )
+    assert evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_touching_an_unsupported_mug_does_not_count_as_independent_hanging():
+    model, data, evaluator = scene(count=2)
+    second = evaluator._mug_qpos_addrs[1]
+    data.qpos[second : second + 3] = [-0.0199, 0.055, 0.2359]
+    result = score((model, data, evaluator))
+    assert result["mug_peer_contact"] == [True, True]
+    assert not result["mug_threaded_peg"][1]
+    assert result["mug_other_contact"] == [True, True]
+    assert not result["success"]
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_deep_mug_to_mug_penetration_still_rejects_hanging():
+    model, data, evaluator = scene(count=2)
+    second = evaluator._mug_qpos_addrs[1]
+    data.qpos[second : second + 3] = [-0.015, 0.055, 0.2859]
+    result = score((model, data, evaluator))
+    assert result["mug_peer_contact"] == [True, True]
+    assert result["mug_other_contact"] == [True, True]
+    assert not result["success"]
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_extra_unthreaded_peg_brush_does_not_earn_support_or_reject_hanging():
+    root = ET.fromstring(BASE_XML)
+    tree = root.find("worldbody/body[@name='mug_tree']")
+    ET.SubElement(
+        tree,
+        "geom",
+        name="mug_tree_peg_2",
+        type="capsule",
+        size=".006",
+        fromto=".04 .0909 .075 .04 .0909 .085",
+        friction=".02 0 0",
+        priority="2",
+    )
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    result = evaluator.evaluate_model_data(model, data)
+    assert result.scalar_success()
+    assert result.metrics["mug_rack_brace_contact"][0, 0]
+    assert not result.metrics["mug_other_contact"][0, 0]
+    extra = model.geom("mug_tree_peg_2").id
+    assert not evaluator._peg_threaded(data, 0, extra, model)
+    assert (
+        result.metrics["mug_peg_support_force_n"][0, 0]
+        >= evaluator.support_weight_fraction * evaluator._mug_weights[0]
+    )
+    assert evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()

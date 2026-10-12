@@ -7,6 +7,16 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 2.0.2
+
+- Permit shallow non-supporting contact with another rack peg without adding
+  that contact's force to the required threaded-handle load.
+- Permit shallow mug-to-mug tangency only when both mugs independently have
+  released threaded-handle support and the required peg load. Unsupported
+  stacks, table/gripper contacts and deep mug/rack penetration still fail.
+- Training replay disagreements motivated these incidental-contact fixes;
+  they preserve the intended criterion that every mug hangs independently.
+
 ## 2.0.1
 
 - Allow shallow incidental trunk/base bracing alongside released, threaded
