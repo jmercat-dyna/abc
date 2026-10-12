@@ -528,8 +528,12 @@ regressions: `python -m pytest -q abc_sim/task_eval/count_box_test.py`.
 ## Mug-rack scoring and simulator versions
 
 `hang_mug_on_mug_rack` requires every mug to hang independently after release.
-A rack peg must pass through an empty, enclosed handle opening and bear upward
-load on the handle. Collision checks reject table support, stacked mugs,
+A rack peg must enter an empty, enclosed handle opening and bear upward load
+on the handle. The scorer checks a bounded set of points on the actual peg
+segment inside the collision-derived handle x envelope, so a peg tip or
+asymmetric opening can qualify without crossing the vessel-center plane.
+Every candidate retains the solid-occupancy and four-ray enclosure checks;
+no extrapolation beyond the peg or dense uniform search is used. Collision checks reject table support, stacked mugs,
 robot contact, unsupported mug stacks, and deep mesh penetration. Shallow
 trunk/base or unused-peg bracing is permitted alongside genuine handle/peg
 support; bracing never earns peg-load credit. Shallow mug-to-mug tangency is
@@ -548,7 +552,7 @@ compiled mug variant/scale. Configurable evaluator options are
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **2.0.2**,
+`abc_sim/VERSION` now records simulator task/protocol version **2.0.3**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records

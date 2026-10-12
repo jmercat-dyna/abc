@@ -287,6 +287,7 @@ class MugOnRackEvaluator:
         self._mug_bodies = []
         self._mug_geoms = []
         self._vessel_geometry = []
+        self._handle_x_bounds = []
         self._mug_weights = []
         gravity = float(np.linalg.norm(model.opt.gravity))
         if gravity <= 0:
@@ -342,6 +343,14 @@ class MugOnRackEvaluator:
             self._mug_bodies.append(body)
             self._mug_geoms.append(geoms)
             self._vessel_geometry.append((center, radius))
+            handle = points[
+                points[:, 1] < center[1] - radius - self.geometry_tolerance_m
+            ]
+            self._handle_x_bounds.append(
+                (float(handle[:, 0].min()), float(handle[:, 0].max()))
+                if len(handle)
+                else None
+            )
             self._mug_weights.append(
                 sum(float(model.body_mass[b]) for b in bodies) * gravity
             )
@@ -420,26 +429,64 @@ class MugOnRackEvaluator:
         segment = (segment_world - data.xpos[body]) @ rotation
         center, radius = self._vessel_geometry[mug_index]
         delta = segment[1] - segment[0]
+        bounds = self._handle_x_bounds[mug_index]
+        if bounds is None:
+            return False
         if abs(delta[0]) <= self.geometry_tolerance_m:
-            return False
-        t = (center[0] - segment[0, 0]) / delta[0]
-        if not 0 < t < 1:
-            return False
-        crossing = segment[0] + t * delta
-        if np.linalg.norm(crossing[:2] - center) <= radius + self.geometry_tolerance_m:
-            return False
-        point_world = rotation @ crossing + data.xpos[body]
-        if self._inside_mug_solid(data, self._mug_geoms[mug_index], point_world, model):
-            return False
-        for axis in (1, 2):
-            for sign in (-1, 1):
-                direction = sign * rotation[:, axis]
-                distance = self._ray_mug(
-                    data, self._mug_geoms[mug_index], point_world, direction, model
-                )
-                if distance <= self.geometry_tolerance_m:
-                    return False
-        return True
+            if not bounds[0] <= segment[0, 0] <= bounds[1]:
+                return False
+            lo, hi, preferred = 0.0, 1.0, 0.5
+        else:
+            interval = sorted((x - segment[0, 0]) / delta[0] for x in bounds)
+            lo, hi = max(0.0, interval[0]), min(1.0, interval[1])
+            if lo > hi:
+                return False
+            preferred = float(np.clip((center[0] - segment[0, 0]) / delta[0], lo, hi))
+        # Keep the usual center-plane test first. Fallback points lie only on
+        # the actual peg segment inside the geometry-derived handle x slab;
+        # a tip or asymmetric opening need not contain the vessel-center plane.
+        candidates = (
+            preferred,
+            (lo + hi) / 2,
+            lo,
+            hi,
+            0.75 * lo + 0.25 * hi,
+            0.25 * lo + 0.75 * hi,
+        )
+        seen: set[float] = set()
+        for t in candidates:
+            if t in seen:
+                continue
+            seen.add(t)
+            crossing = segment[0] + t * delta
+            if (
+                np.linalg.norm(crossing[:2] - center)
+                <= radius + self.geometry_tolerance_m
+            ):
+                continue
+            point_world = rotation @ crossing + data.xpos[body]
+            if self._inside_mug_solid(
+                data, self._mug_geoms[mug_index], point_world, model
+            ):
+                continue
+            enclosed = True
+            for axis in (1, 2):
+                for sign in (-1, 1):
+                    distance = self._ray_mug(
+                        data,
+                        self._mug_geoms[mug_index],
+                        point_world,
+                        sign * rotation[:, axis],
+                        model,
+                    )
+                    if distance <= self.geometry_tolerance_m:
+                        enclosed = False
+                        break
+                if not enclosed:
+                    break
+            if enclosed:
+                return True
+        return False
 
     def _sample_support(
         self, data: mujoco.MjData, model: mujoco.MjModel

@@ -384,7 +384,7 @@ def test_threading_geometry_is_cached_only_within_one_sample(monkeypatch):
     assert len(calls) == len(set(calls)) == 1
     # A changed pose must recompute and reject threading; no cached success
     # can survive into the next evaluation.
-    data.qpos[:3] = [0.067, 0.055, 0.281]
+    data.qpos[:3] = [0.04, 0.09, 0.2859]
     mujoco.mj_forward(model, data)
     second = evaluator.evaluate_model_data(model, data)
     assert not second.scalar_success()
@@ -550,3 +550,74 @@ def test_extra_unthreaded_peg_brush_does_not_earn_support_or_reject_hanging():
         >= evaluator.support_weight_fraction * evaluator._mug_weights[0]
     )
     assert evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_peg_tip_in_empty_handle_can_hang_beyond_vessel_center_plane():
+    model, data, evaluator = scene()
+    data.qpos[:3] = [0.067, 0.055, 0.281]
+    mujoco.mj_forward(model, data)
+    peg = next(iter(evaluator._peg_segments))
+    body = evaluator._mug_bodies[0]
+    segment = (
+        evaluator._peg_segments[peg] @ data.geom_xmat[peg].reshape(3, 3).T
+        + data.geom_xpos[peg]
+        - data.xpos[body]
+    ) @ data.xmat[body].reshape(3, 3)
+    center, _ = evaluator._vessel_geometry[0]
+    central_t = (center[0] - segment[0, 0]) / (segment[1, 0] - segment[0, 0])
+    assert not 0 <= central_t <= 1  # The single-plane test missed the actual tip.
+    assert evaluator._peg_threaded(data, 0, peg, model)
+    assert evaluator.evaluate_model_data(model, data).scalar_success()
+    assert evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_asymmetric_handle_opening_is_found_off_vessel_center_plane():
+    root = ET.fromstring(BASE_XML)
+    mug = root.find("worldbody/body[@name='mug_1']")
+    for geom in mug.findall("geom"):
+        if not geom.get("name", "").startswith("handle_"):
+            continue
+        endpoints = np.asarray(list(map(float, geom.get("fromto").split())))
+        endpoints[[0, 3]] -= 0.012
+        geom.set("fromto", " ".join(map(str, endpoints)))
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    peg = next(iter(evaluator._peg_segments))
+    body = evaluator._mug_bodies[0]
+    rotation = data.xmat[body].reshape(3, 3)
+    segment = (
+        evaluator._peg_segments[peg] @ data.geom_xmat[peg].reshape(3, 3).T
+        + data.geom_xpos[peg]
+        - data.xpos[body]
+    ) @ rotation
+    center, _ = evaluator._vessel_geometry[0]
+    central_t = (center[0] - segment[0, 0]) / (segment[1, 0] - segment[0, 0])
+    point = (
+        rotation @ (segment[0] + central_t * (segment[1] - segment[0]))
+        + data.xpos[body]
+    )
+    rays = [
+        evaluator._ray_mug(
+            data, evaluator._mug_geoms[0], point, sign * rotation[:, axis], model
+        )
+        for axis in (1, 2)
+        for sign in (-1, 1)
+    ]
+    assert min(rays) < 0  # The vessel-center rays do not enclose this opening.
+    assert evaluator._peg_threaded(data, 0, peg, model)
+    assert evaluator.evaluate_model_data(model, data).scalar_success()
+    assert evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_open_handle_around_peg_without_load_still_does_not_succeed():
+    model, data, evaluator = scene()
+    data.qpos[2] = 0.3
+    mujoco.mj_forward(model, data)
+    peg = next(iter(evaluator._peg_segments))
+    assert evaluator._peg_threaded(data, 0, peg, model)
+    assert not evaluator.evaluate_model_data(model, data).scalar_success()
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()

@@ -7,6 +7,16 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 2.0.3
+
+- Search a bounded set of points on the actual peg segment within the
+  collision-derived handle x envelope. An enclosed empty handle opening may
+  contain the peg tip or an offset portion of the segment rather than the
+  vessel-center plane; training replay and closeups confirmed both cases.
+- Retain outside-vessel, solid-occupancy, four-ray enclosure, released-contact
+  and minimum peg-load requirements. No extrapolation beyond the peg and no
+  dense uniform segment sampling are introduced.
+
 ## 2.0.2
 
 - Permit shallow non-supporting contact with another rack peg without adding
