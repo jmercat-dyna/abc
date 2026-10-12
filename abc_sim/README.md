@@ -525,6 +525,43 @@ the evaluation protocol; historical final-state results may differ.
 Asset-free geometry, insertion trajectory, per-world stopping, and reload
 regressions: `python -m pytest -q abc_sim/task_eval/count_box_test.py`.
 
+## Mug-rack scoring and simulator versions
+
+`hang_mug_on_mug_rack` requires every mug to hang independently after release.
+A rack peg must pass through an empty, enclosed handle opening and bear upward
+load on the handle. Collision checks reject table support, stacked mugs,
+robot contact, trunk/base contact, and deep mesh penetration; placing mug
+centers near the tree no longer establishes success. Live scoring uses MuJoCo
+contacts/forces; qpos batches reconstruct contacts with `mj_forward`, including
+each world's randomized static rack pose. Force values can differ during
+motion because qpos-only reconstruction does not include velocity; the settled
+positive regressions check both paths.
+
+The six peg collision geoms are named in the bundled scene so mesh scaling
+preserves their identity. Vessel/handle geometry is derived again for each
+compiled mug variant/scale. Configurable evaluator options are
+`support_weight_fraction` (default 0.5), `bottom_slice_fraction` (0.1),
+`geometry_tolerance_m` (0.00001), and `max_penetration_m` (0.002). The geometry
+assumes the shipped assets' handles protrude along local -y and are thin in x;
+a different asset convention needs an updated geometry contract.
+
+`abc_sim/VERSION` now records simulator task/protocol version **2.0.0**,
+independently of the `abc-minimal` policy package version. Read it with
+`abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
+compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
+changes, including the retrospective 1.0.0 baseline before mug scoring changed.
+
+Regression command:
+```bash
+python -m pytest -q abc_sim/task_eval/mug_tree_test.py abc_sim/version_test.py
+```
+The mug suite runs without downloaded assets; additional production-mesh
+positives run when the full task/YAM assets are installed. A CPU audit found
+settled live/batch positives for 14 of 19 mug variants. Four searches did not
+find a valid pose and one candidate lost support while settling: these are
+coverage gaps, not proof those variants are impossible. No filtering of those
+variants is introduced.
+
 ## Assets
 
 Large simulator meshes and textures are not committed to git. They ship as 37
@@ -646,6 +683,34 @@ regardless of `CUDA_VISIBLE_DEVICES`.
 The camera renderers behind these backends live under `abc_sim/rendering/`.
 
 ## Adding a New Env or Task
+
+### Put-relative scoring configuration
+
+`abc_sim/put_relative_config.py` defines the validated `PutRelativeConfig`: along-axis
+minimum/maximum, lateral tolerance and placement-height tolerance. These distances
+are scoring settings, not geometry constants. The shared geometry helper reads this
+config, and a bound sampler uses the effective evaluator config so an override cannot
+produce an already-solved scene under a different success region.
+
+Use the existing task-spec configuration path to change settings:
+
+```python
+from dataclasses import replace
+import abc_sim
+from abc_sim.task_specs import get_task_spec
+
+spec = replace(
+    get_task_spec("put_relative"),
+    evaluator_options=(("along_min_m", 0.08), ("along_max_m", 0.25), ("perp_max_m", 0.04)),
+)
+env = abc_sim.make_env(task=spec, render_cameras=False)
+```
+
+Existing direct evaluator constructor overrides remain supported. Standalone prompt
+sampling accepts `scoring_config=PutRelativeConfig(...)`. Sampling metadata and
+evaluator metrics record `scoring_config`; replay with different settings raises a
+clear error. Distances must be finite/nonnegative and the along-axis interval nonempty.
+Changing these settings changes the evaluation protocol and requires separate results.
 
 At minimum, a new task needs:
 

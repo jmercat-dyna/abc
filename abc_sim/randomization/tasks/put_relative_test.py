@@ -1,5 +1,6 @@
 """Prompt sampling must use the scorer's whole accepted directional band."""
 
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,9 +8,11 @@ import mujoco
 import numpy as np
 import pytest
 
+from abc_sim.put_relative_config import PutRelativeConfig
 from abc_sim.randomization.core import RandomizationSamplingError
 from abc_sim.randomization.tasks import put_relative as sampling
 from abc_sim.task_eval.put_relative import PutRelativeEvaluator
+from abc_sim.task_eval.registry import make_task_evaluator
 from abc_sim.task_specs import get_task_spec
 
 
@@ -34,7 +37,7 @@ def objects():
     ]
 
 
-def evaluator_for(selections, prompt):
+def evaluator_for(selections, prompt, **options):
     bodies = "".join(
         f'<body name="{o["name"]}" pos="{o["x"]:.4f} {o["y"]:.4f} {o["z"]:.4f}">'
         f'<freejoint name="{o["joint"]}"/><geom type="sphere" size=".02"/></body>'
@@ -43,7 +46,9 @@ def evaluator_for(selections, prompt):
     model = mujoco.MjModel.from_xml_string(
         f"<mujoco><worldbody>{bodies}</worldbody></mujoco>"
     )
-    evaluator = PutRelativeEvaluator(model=model, spec=get_task_spec("put_relative"))
+    evaluator = PutRelativeEvaluator(
+        model=model, spec=get_task_spec("put_relative"), **options
+    )
     state = SimpleNamespace(
         metadata=prompt,
         object_states={
@@ -86,6 +91,72 @@ def test_no_sampled_prompt_passes_the_real_scorer_at_reset():
         assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success(), (
             prompt
         )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"along_min_m": 0.03, "along_max_m": 0.8, "perp_max_m": 0.15},
+        {"along_min_m": 0.08, "along_max_m": 0.2, "perp_max_m": 0.04},
+    ],
+)
+def test_custom_scoring_config_keeps_reset_sampling_and_evaluation_consistent(options):
+    config = PutRelativeConfig(**options)
+    for seed in range(100):
+        prompt = sampling._put_relative_sample_prompt(
+            objects(), np.random.default_rng(seed), scoring_config=config
+        )
+        evaluator, data = evaluator_for(objects(), prompt, **asdict(config))
+        assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_bound_randomizer_uses_effective_task_spec_scoring_config(monkeypatch):
+    config = PutRelativeConfig(along_min_m=0.08, along_max_m=0.2, perp_max_m=0.04)
+    evaluator, data = evaluator_for(
+        objects(),
+        sampling._put_relative_sample_prompt(objects(), np.random.default_rng(42)),
+    )
+    spec = replace(
+        get_task_spec("put_relative"), evaluator_options=tuple(asdict(config).items())
+    )
+    evaluator = make_task_evaluator(evaluator.model, spec)
+    assert evaluator.config == config
+    randomizer = sampling.PutRelativeRandomizer()
+    randomizer._env_ref = SimpleNamespace(
+        _task_evaluator=evaluator,
+        model=evaluator.model,
+        data=data,
+        _get_reset_arm_state=lambda: None,
+        reload_from_xml=lambda _: None,
+        _set_qpos_from_state=lambda _: None,
+    )
+    monkeypatch.setattr(randomizer, "_sample_selections", lambda _: objects())
+    monkeypatch.setattr(sampling, "_put_relative_build_xml", lambda _: "unused")
+    state = randomizer.randomize(None, None, seed=42)
+    assert state.metadata["scoring_config"] == asdict(config)
+    evaluator.configure_from_randomization(evaluator.model, state)
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_replay_rejects_mismatching_sampler_and_evaluator_config():
+    prompt = sampling._put_relative_sample_prompt(objects(), np.random.default_rng(42))
+    prompt["scoring_config"] = asdict(PutRelativeConfig(along_max_m=0.2))
+    with pytest.raises(ValueError, match="scoring_config disagree"):
+        evaluator_for(objects(), prompt)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"along_min_m": 0.3, "along_max_m": 0.2},
+        {"perp_max_m": -1},
+        {"along_min_m": float("nan")},
+        {"placed_z_tolerance_m": float("inf")},
+    ],
+)
+def test_invalid_scoring_config_is_rejected(options):
+    with pytest.raises(ValueError):
+        PutRelativeConfig(**options)
 
 
 def test_xml_rounding_at_goal_band_boundary_is_rejected():

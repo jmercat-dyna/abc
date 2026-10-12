@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import asdict
 from typing import Any
 
 import mujoco
 import numpy as np
 
-from abc_sim.put_relative_geometry import (
-    ALONG_MAX_M,
-    ALONG_MIN_M,
-    PERP_MAX_M,
-    relative_placement_geometry,
-)
+from abc_sim.put_relative_config import DEFAULT_PUT_RELATIVE_CONFIG, PutRelativeConfig
+from abc_sim.put_relative_geometry import relative_placement_geometry
 from abc_sim.task_eval.base import TaskEvalResult
 from abc_sim.task_specs import SimTaskSpec
 
@@ -49,19 +46,37 @@ class PutRelativeEvaluator:
         *,
         model: mujoco.MjModel,
         spec: SimTaskSpec,
-        along_min_m: float = ALONG_MIN_M,
-        along_max_m: float = ALONG_MAX_M,
-        perp_max_m: float = PERP_MAX_M,
-        placed_z_tolerance_m: float = 0.03,
+        along_min_m: float = DEFAULT_PUT_RELATIVE_CONFIG.along_min_m,
+        along_max_m: float = DEFAULT_PUT_RELATIVE_CONFIG.along_max_m,
+        perp_max_m: float = DEFAULT_PUT_RELATIVE_CONFIG.perp_max_m,
+        placed_z_tolerance_m: float = DEFAULT_PUT_RELATIVE_CONFIG.placed_z_tolerance_m,
     ) -> None:
         self.spec = spec
-        self.along_min_m = float(along_min_m)
-        self.along_max_m = float(along_max_m)
-        self.perp_max_m = float(perp_max_m)
-        self.placed_z_tolerance_m = float(placed_z_tolerance_m)
+        self.config = PutRelativeConfig(
+            along_min_m=float(along_min_m),
+            along_max_m=float(along_max_m),
+            perp_max_m=float(perp_max_m),
+            placed_z_tolerance_m=float(placed_z_tolerance_m),
+        )
         self._goal: dict[str, Any] | None = None
         self._bind_model(model)
         self.reset(nworld=1)
+
+    @property
+    def along_min_m(self) -> float:
+        return self.config.along_min_m
+
+    @property
+    def along_max_m(self) -> float:
+        return self.config.along_max_m
+
+    @property
+    def perp_max_m(self) -> float:
+        return self.config.perp_max_m
+
+    @property
+    def placed_z_tolerance_m(self) -> float:
+        return self.config.placed_z_tolerance_m
 
     def _bind_model(self, model: mujoco.MjModel) -> None:
         self.model = model
@@ -91,6 +106,9 @@ class PutRelativeEvaluator:
         required = ("mover_object", "reference_object", "direction_offset_xy")
         if any(key not in metadata for key in required):
             return
+        recorded_config = metadata.get("scoring_config")
+        if recorded_config is not None and PutRelativeConfig(**recorded_config) != self.config:
+            raise ValueError("put-relative sampled scene and evaluator scoring_config disagree")
 
         mover = str(metadata["mover_object"])
         reference = str(metadata["reference_object"])
@@ -158,9 +176,7 @@ class PutRelativeEvaluator:
         reference_pos = qpos_batch[:, goal["reference_adr"] : goal["reference_adr"] + 3]
         along, perp, in_cone = relative_placement_geometry(
             mover_pos[:, :2], reference_pos[:, :2], goal["axis"],
-            along_min_m=self.along_min_m,
-            along_max_m=self.along_max_m,
-            perp_max_m=self.perp_max_m,
+            config=self.config,
         )
 
         if goal["spawn_z"] is None:
@@ -183,6 +199,7 @@ class PutRelativeEvaluator:
             reward=reward,
             success=success,
             metrics={
+                "scoring_config": asdict(self.config),
                 "goal_configured": True,
                 "direction": goal["direction"],
                 "mover_object": goal["mover"],

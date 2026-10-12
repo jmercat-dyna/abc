@@ -27,6 +27,7 @@ from abc_minimal.policy import (
 )
 from abc_minimal.policy import DiTInferencePolicy as SimPolicy
 from abc_sim.randomization.core import RandomizationSamplingError
+from abc_sim.version import get_sim_version
 from deploy.policy.selector import sniff_policy_kind
 
 if TYPE_CHECKING:
@@ -443,6 +444,7 @@ def build_summary(
     per_world_max_reward = [w.get("max_reward") for w in worlds]
     has_max_reward = all(value is not None for value in per_world_max_reward)
     summary = {
+        "sim_version": get_sim_version(),
         "format": "abc_minimal_sim_eval/v1",
         "checkpoint": str(ckpt_path),
         "prompt": config.prompt,

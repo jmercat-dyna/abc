@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as _ET
+from dataclasses import asdict
 from pathlib import Path as _Path
 from typing import Any, ClassVar
 
 import mujoco
 import numpy as np
 
+from abc_sim.put_relative_config import DEFAULT_PUT_RELATIVE_CONFIG, PutRelativeConfig
 from abc_sim.put_relative_geometry import relative_placement_geometry
 
 from ..assets.inhand import _inhand_parse_model_xml
@@ -353,6 +355,8 @@ def _put_relative_build_xml(selections: list[dict[str, Any]]) -> str:
 def _put_relative_sample_prompt(
     objects: list[dict[str, Any]],
     rng: np.random.Generator,
+    *,
+    scoring_config: PutRelativeConfig = DEFAULT_PUT_RELATIVE_CONFIG,
 ) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for mover in objects:
@@ -383,6 +387,7 @@ def _put_relative_sample_prompt(
                     np.asarray([float(f"{value:.4f}") for value in mover_xy]),
                     np.asarray([float(f"{value:.4f}") for value in reference_xy]),
                     np.asarray(offset),
+                    config=scoring_config,
                 )
                 if already_solved:
                     continue
@@ -429,12 +434,13 @@ class PutRelativeRandomizer(SceneRandomizer):
 
     perturbations: ClassVar[list] = []
 
-    def __init__(self) -> None:
+    def __init__(self, *, scoring_config: PutRelativeConfig = DEFAULT_PUT_RELATIVE_CONFIG) -> None:
         super().__init__()
+        self.scoring_config = scoring_config
         self._variants: dict[str, list[_Path]] = {}
 
     def clone(self) -> SceneRandomizer:
-        return type(self)()
+        return type(self)(scoring_config=self.scoring_config)
 
     def prepare_env(self) -> None:
         if self._env_ref is not None:
@@ -498,10 +504,14 @@ class PutRelativeRandomizer(SceneRandomizer):
         request: Any | None = None,
     ) -> RandomizationState:
         rng = np.random.default_rng(seed)
+        evaluator = getattr(self._env_ref, "_task_evaluator", None)
+        scoring_config = getattr(evaluator, "config", self.scoring_config)
         for _ in range(_PUT_RELATIVE_MAX_PROMPT_TRIES):
             try:
                 selections = self._sample_selections(rng)
-                prompt_info = _put_relative_sample_prompt(selections, rng)
+                prompt_info = _put_relative_sample_prompt(
+                    selections, rng, scoring_config=scoring_config
+                )
                 break
             except RandomizationSamplingError:
                 continue
@@ -546,6 +556,7 @@ class PutRelativeRandomizer(SceneRandomizer):
             )
 
         metadata = {
+            "scoring_config": asdict(scoring_config),
             "prompt": str(prompt_info["prompt"]),
             "prompt_type": prompt_info["prompt_type"],
             "mover_object": prompt_info["mover_object"],

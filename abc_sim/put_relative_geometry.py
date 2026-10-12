@@ -2,9 +2,7 @@
 
 import numpy as np
 
-ALONG_MIN_M = 0.06
-ALONG_MAX_M = 0.30
-PERP_MAX_M = 0.08
+from abc_sim.put_relative_config import DEFAULT_PUT_RELATIVE_CONFIG, PutRelativeConfig
 
 
 def relative_placement_geometry(
@@ -12,9 +10,7 @@ def relative_placement_geometry(
     reference_xy: np.ndarray,
     direction_xy: np.ndarray,
     *,
-    along_min_m: float = ALONG_MIN_M,
-    along_max_m: float = ALONG_MAX_M,
-    perp_max_m: float = PERP_MAX_M,
+    config: PutRelativeConfig = DEFAULT_PUT_RELATIVE_CONFIG,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return along/perpendicular distances and membership in the goal band."""
     axis = np.asarray(direction_xy, dtype=np.float32)
@@ -24,5 +20,9 @@ def relative_placement_geometry(
     )
     along = relative_xy @ axis
     perp = np.abs(relative_xy @ np.asarray([-axis[1], axis[0]], dtype=np.float32))
-    in_cone = (along >= along_min_m) & (along <= along_max_m) & (perp <= perp_max_m)
+    in_cone = (
+        (along >= config.along_min_m)
+        & (along <= config.along_max_m)
+        & (perp <= config.perp_max_m)
+    )
     return along, perp, in_cone
