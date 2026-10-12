@@ -428,6 +428,56 @@ def test_light_trunk_bracing_does_not_reject_genuine_handle_support():
     np.testing.assert_array_equal(batch.metrics["mug_rack_brace_contact"], [[True]])
 
 
+@pytest.mark.parametrize(
+    "brace_position, expected_success",
+    [(".04 .0909 .075", True), (".04 .03 .0305", False)],
+)
+def test_shared_trunk_and_threaded_peg_load_obeys_configured_minimum(
+    brace_position, expected_success
+):
+    root = ET.fromstring(BASE_XML)
+    tree = root.find("worldbody/body[@name='mug_tree']")
+    ET.SubElement(
+        tree,
+        "geom",
+        name="trunk_shared_support",
+        type="sphere",
+        size=".006",
+        pos=brace_position,
+    )
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    live = evaluator.evaluate_model_data(model, data)
+    load_fraction = (
+        live.metrics["mug_peg_support_force_n"][0, 0] / evaluator._mug_weights[0]
+    )
+    assert live.metrics["mug_threaded_peg"][0, 0]
+    assert live.metrics["mug_rack_brace_contact"][0, 0]
+    assert live.metrics["mug_rack_brace_force_n"][0, 0] > 0
+    assert not live.metrics["mug_other_contact"][0, 0]
+    assert evaluator.support_weight_fraction == 0.25
+    if expected_success:
+        assert 0.25 < load_fraction < 0.5
+    else:
+        assert 0 < load_fraction < 0.25
+    assert live.scalar_success() == expected_success
+    assert (
+        evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+        == expected_success
+    )
+    stricter = MugOnRackEvaluator(
+        model=model,
+        spec=get_task_spec("hang_mug_on_mug_rack"),
+        support_weight_fraction=0.5,
+    )
+    assert not stricter.evaluate_model_data(model, data).scalar_success()
+    assert not stricter.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
 def test_deep_rack_bracing_still_rejects_hanging():
     root = ET.fromstring(BASE_XML)
     tree = root.find("worldbody/body[@name='mug_tree']")

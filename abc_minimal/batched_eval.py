@@ -74,7 +74,19 @@ def over(result: TaskEvalResult | None, num_worlds: int) -> np.ndarray:
     """Per-world termination, preserving legacy maintenance evaluator behavior."""
     if result is None:
         return np.zeros(num_worlds, dtype=bool)
-    if result.metrics.get("success_semantics") == "held_countdown_complete":
+    if (
+        result.metrics.get("success_semantics")
+        == "held_lifted_countdown_then_survive_timeout"
+    ):
+        flags = np.logical_or(
+            result.metrics.get("timed_out", False),
+            result.metrics.get("ever_failed", False),
+        )
+    elif result.metrics.get("success_semantics") in {
+        "held_countdown_complete",
+        "latched_success_until_unpicked_object_lost",
+        "placed_target_settle_until_terminal_failure",
+    }:
         flags = np.logical_or(
             result.metrics["ever_success"], result.metrics.get("ever_failed", False)
         )
@@ -324,6 +336,13 @@ def rollout_batched_worlds(
                 }
                 if diverged[index]:
                     world["diverged"] = True
+                    world["sim_error"] = "MJWarp physics diverged to non-finite qpos"
+                    world["status"] = "simulation_error"
+                    world["success"] = None
+                    world["final_success"] = None
+                else:
+                    world["sim_error"] = None
+                    world["status"] = "valid"
                 worlds.append(world)
                 print(
                     f"world={world_index:03d} done success={world['success']} "

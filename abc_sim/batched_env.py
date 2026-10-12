@@ -19,8 +19,15 @@ from abc_sim.task_eval import TaskEvalResult, make_task_evaluator
 
 # Compiled geometry every world in a batch must agree on.
 SHARED_MODEL_FIELDS = (
-    "geom_size", "geom_pos", "geom_quat", "geom_dataid", "geom_type",
-    "body_mass", "body_inertia", "mesh_vert", "jnt_qposadr",
+    "geom_size",
+    "geom_pos",
+    "geom_quat",
+    "geom_dataid",
+    "geom_type",
+    "body_mass",
+    "body_inertia",
+    "mesh_vert",
+    "jnt_qposadr",
 )
 
 
@@ -46,11 +53,26 @@ class PerWorldEvaluators:
     def per_world_keys(self, qpos: np.ndarray) -> set[str]:
         metrics = self.evaluators[0].evaluate_qpos_batch(qpos[:1]).metrics
         self.evaluators[0].reset(nworld=1)
-        return {key for key, value in metrics.items() if isinstance(value, (list, np.ndarray)) and len(value) == 1}
+        return {
+            key
+            for key, value in metrics.items()
+            if isinstance(value, (list, np.ndarray)) and len(value) == 1
+        }
 
-    def evaluate_qpos_batch(self, qpos: np.ndarray) -> TaskEvalResult:
+    def evaluate_qpos_batch(
+        self, qpos: np.ndarray, *, time_s: np.ndarray | None = None
+    ) -> TaskEvalResult:
+        times = (
+            None
+            if time_s is None
+            else np.broadcast_to(np.asarray(time_s), (len(qpos),))
+        )
         results = [
-            evaluator.evaluate_qpos_batch(qpos[index : index + 1])
+            evaluator.evaluate_qpos_batch_at_time(
+                qpos[index : index + 1], times[index : index + 1]
+            )
+            if times is not None and hasattr(evaluator, "evaluate_qpos_batch_at_time")
+            else evaluator.evaluate_qpos_batch(qpos[index : index + 1])
             for index, evaluator in enumerate(self.evaluators)
         ]
         metrics = {}
@@ -117,7 +139,9 @@ class BatchedWarpYAMEnv:
     def model(self) -> mujoco.MjModel:
         return self.base_env.model
 
-    def reset(self, seeds: list[int], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    def reset(
+        self, seeds: list[int], options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Reset world i from seeds[i] through the base env and load the batch."""
         if len(seeds) != self.num_worlds:
             raise ValueError(f"expected {self.num_worlds} seeds, got {len(seeds)}")
@@ -127,7 +151,10 @@ class BatchedWarpYAMEnv:
                 self.base_env.reset(seed=seed, options=options, randomize=True)
             except RandomizationSamplingError:
                 seed += 100_000
-                print(f"seed {seed - 100_000} unplaceable, resampled -> {seed}", flush=True)
+                print(
+                    f"seed {seed - 100_000} unplaceable, resampled -> {seed}",
+                    flush=True,
+                )
                 self.base_env.reset(seed=seed, options=options, randomize=True)
             self.seeds[index] = seed
             self.randomization[index] = self.base_env._last_randomization
@@ -170,7 +197,9 @@ class BatchedWarpYAMEnv:
                 ("set_active_object_joints", "active_object_joints"),
             ):
                 if hasattr(self._evaluator, method):
-                    getattr(self._evaluator, method)([state.metadata[key] for state in self.randomization])
+                    getattr(self._evaluator, method)(
+                        [state.metadata[key] for state in self.randomization]
+                    )
         return self.get_obs()
 
     def _snapshot(self) -> dict[str, Any]:
@@ -221,7 +250,9 @@ class BatchedWarpYAMEnv:
         self._camera_index = {self.model.cam(i).name: i for i in range(self.model.ncam)}
         self._evaluator = make_task_evaluator(self.model, self.base_env._task_spec)
         if hasattr(self._evaluator, "configure_from_randomization"):
-            self._evaluator = PerWorldEvaluators(self.model, self.base_env._task_spec, self.num_worlds)
+            self._evaluator = PerWorldEvaluators(
+                self.model, self.base_env._task_spec, self.num_worlds
+            )
 
     def _probe_metric_keys(self) -> set[str]:
         """Evaluator metric keys with a leading world axis.
@@ -231,7 +262,9 @@ class BatchedWarpYAMEnv:
         """
         keys = None
         for width in (self.num_worlds + 1, self.num_worlds + 2):
-            result = self._evaluator.evaluate_qpos_batch(np.repeat(self.qpos[:1], width, axis=0))
+            result = self._evaluator.evaluate_qpos_batch(
+                np.repeat(self.qpos[:1], width, axis=0)
+            )
             found = {
                 key
                 for key, value in result.metrics.items()
@@ -245,7 +278,9 @@ class BatchedWarpYAMEnv:
         actions = np.asarray(actions, dtype=np.float32)
         expected = (self.num_worlds, self.base_env.single_timestep_action_dim)
         if actions.shape != expected:
-            raise ValueError(f"expected actions of shape {expected}, got {actions.shape}")
+            raise ValueError(
+                f"expected actions of shape {expected}, got {actions.shape}"
+            )
         scaled = actions.copy()
         scaled[:, self.base_env._gripper_indices] *= _GRIPPER_CTRL_MAX
         ctrl = np.zeros((self.num_worlds, self.model.nu), dtype=np.float32)
@@ -255,12 +290,20 @@ class BatchedWarpYAMEnv:
         data = self._runtime.d_warp
         self.qpos = data.qpos.numpy()
         if int(data.nacon.numpy()[0]) >= data.naconmax:
-            raise RuntimeError("MJWarp contact buffer overflowed; raise nconmax in BatchedWarpYAMEnv")
+            raise RuntimeError(
+                "MJWarp contact buffer overflowed; raise nconmax in BatchedWarpYAMEnv"
+            )
         return self.evaluate()
 
     def evaluate(self) -> TaskEvalResult | None:
         if self._evaluator is None:
             return None
+        if self._runtime is not None:
+            times = self._runtime.d_warp.time.numpy()
+            if isinstance(self._evaluator, PerWorldEvaluators):
+                return self._evaluator.evaluate_qpos_batch(self.qpos, time_s=times)
+            if hasattr(self._evaluator, "evaluate_qpos_batch_at_time"):
+                return self._evaluator.evaluate_qpos_batch_at_time(self.qpos, times)
         return self._evaluator.evaluate_qpos_batch(self.qpos)
 
     def state(self) -> np.ndarray:

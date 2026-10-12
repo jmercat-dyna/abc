@@ -8,7 +8,6 @@ from typing import Any
 import mujoco
 import numpy as np
 
-
 _DEFAULT_DURATION_S = 12
 _HOLD_TO_START_S = 0.0
 _HANDLE_CONTACT_GRACE_S = 0.1
@@ -31,7 +30,25 @@ _GRIPPER_ROOT_BODIES = {
 class BallTrayBalancingRuntime:
     """Start a visible balance countdown once both grippers hold both tray posts."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, min_lift_height_m: float = 0.001, timeout_s: float = 30.0
+    ) -> None:
+        self._min_lift_height_m = float(min_lift_height_m)
+        if not np.isfinite(self._min_lift_height_m) or self._min_lift_height_m <= 0:
+            raise ValueError("min_lift_height_m must be positive and finite")
+        self._timeout_s = float(timeout_s)
+        if not np.isfinite(self._timeout_s) or self._timeout_s <= 0:
+            raise ValueError("timeout_s must be positive and finite")
+        self._configured_min_lift_height_m = self._min_lift_height_m
+        self._configured_timeout_s = self._timeout_s
+        self._reset_time_s = 0.0
+        self._elapsed_s = 0.0
+        self._reset_tray_height_m: float | None = None
+        self._tray_geom_ids: set[int] = set()
+        self._table_geom_ids: set[int] = set()
+        self._tray_lifted = False
+        self._tray_table_contact = False
+        self._tray_height_gain_m = 0.0
         self._gripper_geom_ids: dict[str, set[int]] = {"left": set(), "right": set()}
         self._handle_geom_ids: dict[str, int] = {}
         self._ball_body_id: int | None = None
@@ -76,6 +93,14 @@ class BallTrayBalancingRuntime:
         self._ball_body_id = ball_body_id if ball_body_id >= 0 else None
         tray_site_id = self._optional_site_id(model, _TRAY_CENTER_SITE)
         self._tray_center_site_id = tray_site_id if tray_site_id >= 0 else None
+        if self._tray_center_site_id is not None:
+            tray_body = int(model.site_bodyid[self._tray_center_site_id])
+            tray_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, tray_body)
+            self._tray_geom_ids = self._geom_ids_for_body_subtrees(model, (tray_name,))
+        else:
+            self._tray_geom_ids = set()
+        table_id = self._optional_geom_id(model, "table_plane")
+        self._table_geom_ids = {table_id} if table_id >= 0 else set()
         self._applied_world_force_n[:] = 0.0
 
     def after_reset(
@@ -88,6 +113,26 @@ class BallTrayBalancingRuntime:
         """Reset countdown state and load the randomized balance duration."""
 
         self._duration_s = self._duration_from_randomization(randomization)
+        self._min_lift_height_m = self._configured_min_lift_height_m
+        self._timeout_s = self._configured_timeout_s
+        metadata = getattr(randomization, "metadata", None)
+        if isinstance(metadata, dict):
+            for key in ("min_lift_height_m", "timeout_s"):
+                if key in metadata:
+                    value = float(metadata[key])
+                    if not np.isfinite(value) or value <= 0:
+                        raise ValueError(f"{key} must be positive and finite")
+                    setattr(self, "_" + key, value)
+        self._reset_time_s = float(data.time)
+        self._elapsed_s = 0.0
+        self._reset_tray_height_m = (
+            float(data.site_xpos[self._tray_center_site_id, 2])
+            if self._tray_center_site_id is not None
+            else None
+        )
+        self._tray_lifted = False
+        self._tray_table_contact = False
+        self._tray_height_gain_m = 0.0
         self._started_at_s = None
         self._deadline_s = None
         self._grip_detected_at_s = None
@@ -126,13 +171,36 @@ class BallTrayBalancingRuntime:
         """Update the countdown after MuJoCo has produced contact data."""
 
         now_s = float(data.time)
+        self._elapsed_s = max(0.0, now_s - self._reset_time_s)
         self._contacted_handles = self._detect_gripper_handle_contacts(model, data)
         both_posts_gripped = self._both_posts_gripped(self._contacted_handles)
+        self._tray_table_contact = any(
+            (
+                int(contact.geom1) in self._tray_geom_ids
+                and int(contact.geom2) in self._table_geom_ids
+            )
+            or (
+                int(contact.geom2) in self._tray_geom_ids
+                and int(contact.geom1) in self._table_geom_ids
+            )
+            for contact in data.contact[: data.ncon]
+        )
+        self._tray_height_gain_m = (
+            float(data.site_xpos[self._tray_center_site_id, 2])
+            - self._reset_tray_height_m
+            if self._tray_center_site_id is not None
+            and self._reset_tray_height_m is not None
+            else 0.0
+        )
+        self._tray_lifted = (
+            self._tray_height_gain_m >= self._min_lift_height_m
+            and not self._tray_table_contact
+        )
         if both_posts_gripped:
             self._last_both_handles_contact_at_s = now_s
 
         if self._started_at_s is None:
-            if both_posts_gripped:
+            if both_posts_gripped and self._tray_lifted:
                 if self._grip_detected_at_s is None:
                     self._grip_detected_at_s = now_s
                 hold_s = now_s - self._grip_detected_at_s
@@ -150,7 +218,9 @@ class BallTrayBalancingRuntime:
         self._handles_held = handles_held
         # A brief contact flicker is tolerated, but letting go must not earn
         # countdown time while the tray rests on the table.
-        if self._started_at_s is not None and not handles_held:
+        if self._started_at_s is not None and (
+            not handles_held or not self._tray_lifted
+        ):
             self._started_at_s = None
             self._deadline_s = None
             self._grip_detected_at_s = None
@@ -166,11 +236,25 @@ class BallTrayBalancingRuntime:
             "state": self._state,
             "display_prompt": self._display_prompt,
             "duration_s": int(self._duration_s),
-            "remaining_s": None if self._remaining_s is None else float(self._remaining_s),
+            "remaining_s": None
+            if self._remaining_s is None
+            else float(self._remaining_s),
             "started": self._started_at_s is not None,
             "complete": self._state == "complete",
+            "countdown_completed_within_timeout": (
+                self._state == "complete"
+                and self._deadline_s is not None
+                and self._deadline_s <= self._reset_time_s + self._timeout_s
+            ),
             "both_posts_gripped": self._both_posts_gripped(self._contacted_handles),
             "handles_held": self._handles_held,
+            "tray_lifted": self._tray_lifted,
+            "tray_table_contact": self._tray_table_contact,
+            "tray_height_gain_m": self._tray_height_gain_m,
+            "min_lift_height_m": self._min_lift_height_m,
+            "elapsed_s": self._elapsed_s,
+            "timeout_s": self._timeout_s,
+            "timed_out": self._elapsed_s >= self._timeout_s,
             "left_contacted_handles": self._contacted_handles["left"],
             "right_contacted_handles": self._contacted_handles["right"],
             "perturbation_interval_s": _PERTURBATION_INTERVAL_S,
@@ -253,8 +337,7 @@ class BallTrayBalancingRuntime:
                 elif geom2 in gripper_geoms and geom1 in handle_by_geom_id:
                     contacts[side].add(handle_by_geom_id[geom1])
         return {
-            side: tuple(sorted(handle_names))
-            for side, handle_names in contacts.items()
+            side: tuple(sorted(handle_names)) for side, handle_names in contacts.items()
         }
 
     def _maybe_schedule_perturbation(
@@ -303,9 +386,7 @@ class BallTrayBalancingRuntime:
                         *_PERTURBATION_DIRECTION_JITTER_RANGE_RAD,
                     )
                 )
-        force_n = float(
-            self._perturbation_rng.uniform(*_PERTURBATION_FORCE_RANGE_N)
-        )
+        force_n = float(self._perturbation_rng.uniform(*_PERTURBATION_FORCE_RANGE_N))
         self._active_local_force_n[:] = force_n * np.array(
             [
                 np.cos(self._perturbation_direction_rad),
@@ -361,11 +442,14 @@ class BallTrayBalancingRuntime:
                 self._display_prompt = "Balance complete"
             else:
                 self._state = "counting_down"
-                self._display_prompt = f"Balance: {int(math.ceil(remaining_s))}s"
+                self._display_prompt = f"Balance: {math.ceil(remaining_s)}s"
             return
 
         self._remaining_s = float(self._duration_s)
-        if both_posts_gripped and self._grip_detected_at_s is not None:
+        if both_posts_gripped and not self._tray_lifted:
+            self._state = "waiting_for_lift"
+            self._display_prompt = "Lift tray off the table"
+        elif both_posts_gripped and self._grip_detected_at_s is not None:
             self._state = "starting"
             self._display_prompt = "Hold both tray handles"
         else:

@@ -7,6 +7,41 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.0.0
+
+- Ball-tray balancing now uses the actual scaled, rotated collision floor
+  footprint rather than the smaller centering region. A ball center outside
+  that footprint or at/below its top plane is latched failure (1 micrometre
+  configurable plane tolerance). The sphere radius is read from the model.
+- Require both handles and a lifted, table-free tray throughout the sampled
+  countdown. Lift means at least 1 mm above the randomized reset height and
+  no tray/table contact; the threshold is configurable. Countdown completion
+  qualifies success, but native rollout continues until a configurable 30-second
+  timeout or failure. Later ball loss revokes success; setting the tray down
+  after qualification is allowed if the ball remains on it.
+- Change the default minimum threaded-peg load from 50% to 25% of mug weight.
+  The user reviewed a released training-demo mug supported about 42% by its
+  threaded peg and 56% by the trunk and defined that shared-support pose as
+  success. This deliberately changes the scoring criterion and is a major
+  protocol version bump.
+- Keep the threshold configurable; an explicit `support_weight_fraction=0.5`
+  retains the stricter minimum. Empty-handle threading, release and rejection
+  of table/gripper/unsupported stack/deep penetration remain unchanged.
+
+- Conveyor pickup records genuine opposing-finger, lifted pickup at every physics
+  substep. An object that leaves the belt before pickup or bin placement latches
+  terminal failure; pushing an object off the belt cannot count as pickup.
+- Grab-from-clutter latches failure immediately when a wrong object enters the
+  crate. Released, floor-supported target placement starts a configurable
+  three-second settling deadline. Success requires the target to remain inside
+  at that deadline. Batched scoring uses each world's actual simulation clock.
+- Detect MuJoCo BADQPOS/BADQVEL/BADQACC warnings and time regression at each CPU
+  physics step, and stop before recording/scoring an automatic-reset frame.
+  Record these episodes as `simulation_error`, with null success, and exclude
+  them from model success/reward denominators. Preserve attempted and valid
+  trial counts separately. This guard prevents silent continuation; it does
+  not establish or repair the numerical trigger of the reported nuts scene.
+
 ## 2.0.3
 
 - Search a bounded set of points on the actual peg segment within the

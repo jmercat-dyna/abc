@@ -34,7 +34,7 @@ class MugOnRackEvaluator:
         hang_radius_m: float = 0.115,
         base_clearance_m: float = 0.005,
         top_clearance_m: float = 0.05,
-        support_weight_fraction: float = 0.5,
+        support_weight_fraction: float = 0.25,
         bottom_slice_fraction: float = 0.1,
         geometry_tolerance_m: float = 1e-5,
         max_penetration_m: float = 0.002,

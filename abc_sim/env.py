@@ -460,11 +460,22 @@ class MuJoCoYAMEnv(gym.Env):
 
     def _episode_status(self, info: dict[str, Any]) -> tuple[bool, bool]:
         task_success = bool(info.get("task_success", False))
-        terminated = bool(self.terminate_on_success and task_success)
+        task_eval = info.get("task_eval", {})
+        task_failed = bool(task_eval.get("ever_failed", False))
+        balancing_timeout = (
+            task_eval.get("success_semantics")
+            == "held_lifted_countdown_then_survive_timeout"
+        )
+        timed_out = bool(balancing_timeout and task_eval.get("timed_out", False))
+        success_can_stop = not balancing_timeout or timed_out
+        terminated = bool(
+            task_failed or (self.terminate_on_success and task_success and success_can_stop)
+        )
         time_limit_reached = (
             self.max_episode_steps is not None
             and self.cur_step >= self.max_episode_steps
         )
+        time_limit_reached = time_limit_reached or timed_out
         truncated = bool(time_limit_reached and not terminated)
         info["episode_step"] = self.cur_step
         info["terminate_on_success"] = self.terminate_on_success
@@ -527,10 +538,33 @@ class MuJoCoYAMEnv(gym.Env):
         num_steps = self._control_decimation if steps is None else steps
         if num_steps < 0:
             raise ValueError(f"steps must be non-negative, got {num_steps}")
+        instability_warnings = (
+            mujoco.mjtWarning.mjWARN_BADQPOS,
+            mujoco.mjtWarning.mjWARN_BADQVEL,
+            mujoco.mjtWarning.mjWARN_BADQACC,
+        )
         for _ in range(num_steps):
             if self._task_runtime is not None:
                 self._task_runtime.before_step(self.model, self.data)
+            before_time = float(self.data.time)
+            before_warning_counts = tuple(
+                int(self.data.warning[warning].number) for warning in instability_warnings
+            )
             mujoco.mj_step(self.model, self.data)
+            raised_warnings = [
+                f"{warning.name} at DOF {int(self.data.warning[warning].lastinfo)}"
+                for warning, previous_count in zip(instability_warnings, before_warning_counts)
+                if int(self.data.warning[warning].number) > previous_count
+            ]
+            after_time = float(self.data.time)
+            time_reset = not np.isfinite(after_time) or after_time <= before_time
+            if raised_warnings or time_reset:
+                reason = "; ".join(raised_warnings) or "simulation clock did not advance"
+                raise mujoco.FatalError(
+                    f"MuJoCo physics instability: {reason}; "
+                    f"time {before_time:.9g} -> {after_time:.9g}. "
+                    "Episode aborted; invalid physics state will not be scored."
+                )
             if self._task_runtime is not None:
                 after_step = getattr(self._task_runtime, "after_step", None)
                 if after_step is not None:

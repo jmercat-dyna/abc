@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import mujoco
 import torch
 
 from abc_minimal.config import (
@@ -226,11 +227,22 @@ def resolve_prefix_length(
 def rollout_over(task_eval: dict[str, Any]) -> bool:
     """Whether a rollout has nothing left to do and can stop before its budget.
 
-    Most tasks stop at first success. Held-countdown balancing also stops when
-    its countdown completes, or when the ball drops. Legacy maintenance
+    Most tasks stop at first success. Lifted balancing continues after countdown
+    qualification until its timeout or ball loss. Legacy maintenance
     evaluators define ever_success as "not yet failed" and stop only on failure.
     """
-    if task_eval.get("success_semantics") == "held_countdown_complete":
+    if (
+        task_eval.get("success_semantics")
+        == "held_lifted_countdown_then_survive_timeout"
+    ):
+        return bool(
+            task_eval.get("timed_out", False) or task_eval.get("ever_failed", False)
+        )
+    if task_eval.get("success_semantics") in {
+        "held_countdown_complete",
+        "latched_success_until_unpicked_object_lost",
+        "placed_target_settle_until_terminal_failure",
+    }:
         return bool(task_eval["ever_success"] or task_eval.get("ever_failed", False))
     if "ever_failed" in task_eval:
         return bool(task_eval["ever_failed"])
@@ -242,6 +254,8 @@ def world_success_flags(
 ) -> tuple[bool, bool]:
     """Terminal failure overrides both historical and current success flags."""
     failed = failed or bool(task_eval.get("ever_failed", False))
+    if task_eval.get("success_semantics") == "held_lifted_countdown_then_survive_timeout":
+        failed = failed or not bool(task_eval.get("timed_out", False))
     return (
         bool(task_eval["ever_success"]) and not failed,
         bool(task_eval["success"]) and not failed,
@@ -435,13 +449,17 @@ def build_summary(
     physics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Aggregate per-world records, write summary.json, and print the tail lines."""
-    success = np.asarray([w["success"] for w in worlds], dtype=bool)
-    rewards = np.asarray([w["reward"] for w in worlds], dtype=np.float32)
+    valid_worlds = [
+        w for w in worlds
+        if w.get("sim_error") is None and not w.get("diverged", False)
+    ]
+    success = np.asarray([w["success"] for w in valid_worlds], dtype=bool)
+    rewards = np.asarray([w["reward"] for w in valid_worlds], dtype=np.float32)
     per_world_max_bottles = [
-        w["final_task_eval"].get("max_bottles_in_bin_so_far") for w in worlds
+        w["final_task_eval"].get("max_bottles_in_bin_so_far") for w in valid_worlds
     ]
     has_bottles_metric = all(value is not None for value in per_world_max_bottles)
-    per_world_max_reward = [w.get("max_reward") for w in worlds]
+    per_world_max_reward = [w.get("max_reward") for w in valid_worlds]
     has_max_reward = all(value is not None for value in per_world_max_reward)
     summary = {
         "sim_version": get_sim_version(),
@@ -453,6 +471,10 @@ def build_summary(
         "success_rate": float(success.mean()) if success.size else None,
         "num_success": int(success.sum()),
         "num_worlds": len(worlds),
+        "num_valid_worlds": len(valid_worlds),
+        "num_attempted_worlds": len(worlds),
+        "num_sim_errors": len(worlds) - len(valid_worlds),
+        "num_failure": len(valid_worlds) - int(success.sum()),
         "mean_reward": float(rewards.mean()) if rewards.size else None,
         "worlds": worlds,
     }
@@ -483,7 +505,7 @@ def build_summary(
     )
     print(
         f"summary: success_rate={summary['success_rate']} "
-        f"num_success={summary['num_success']}/{summary['num_worlds']} "
+        f"num_success={summary['num_success']}/{summary['num_valid_worlds']} "
         f"mean_reward={summary['mean_reward']}{progress_text_part}{bottles_text}",
         flush=True,
     )
@@ -644,6 +666,7 @@ def rollout_worlds(
             steps = 0
             chunk_metrics = []
             rtc = None
+            sim_error = None
             try:
                 obs_fn = env.obs_vanilla_state if config.vanilla_physics else env.obs
                 eval_fn = env.evaluate_vanilla if config.vanilla_physics else env.evaluate
@@ -713,10 +736,10 @@ def rollout_worlds(
                             next_noise = sample_noise(rng)
                             rtc.start(next_obs, actions, next_noise)
                             rtc_started = True
+                        steps += 1
                         step_fn(action)
                         final_eval = eval_fn()
                         max_reward = max(max_reward, float(final_eval.get("reward", 0.0)))
-                        steps += 1
                         if video is not None and steps % config.video_every_n_actions == 0:
                             video.append_data(video_frame(render_fn(), model_config.camera_keys))
                         if rollout_over(final_eval):
@@ -778,18 +801,23 @@ def rollout_worlds(
                             f"done={rollout_over(final_eval)}{rtc_text}",
                             flush=True,
                         )
+            except mujoco.FatalError as error:
+                sim_error = str(error)
+                print(f"world={world_index:03d} invalid simulation at step={steps}: {sim_error}", flush=True)
             finally:
                 if rtc is not None:
                     rtc.close()
                 if video is not None:
                     video.close()
 
-            success, final_success = world_success_flags(final_eval)
+            success, final_success = world_success_flags(final_eval, failed=sim_error is not None)
             world = {
                 "world_index": world_index,
                 "world_seed": seed,
-                "success": success,
-                "final_success": final_success,
+                "success": success if sim_error is None else None,
+                "status": "simulation_error" if sim_error is not None else "valid",
+                "sim_error": sim_error,
+                "final_success": final_success if sim_error is None else None,
                 "reward": float(final_eval["reward"]),
                 "max_reward": float(max_reward),
                 "steps": steps,

@@ -274,14 +274,45 @@ real measurement. The unscored four — `put_markers_in_top_drawer`,
 score themselves: they warn at startup and report reward 0 and success 0
 throughout. Watch the videos to judge those.
 
-`ball_tray_balancing` succeeds only when both grippers hold distinct tray
-handles for the sampled countdown (10–15 seconds) and the ball never leaves
-the usable tray area. Contact gaps up to 0.1 seconds are tolerated; longer
-gaps reset the countdown. Native eval stops on completion or ball failure.
-The evaluator reports `success_semantics: held_countdown_complete`,
-`handles_held`, and `countdown_complete`; qpos without a bound task runtime
-cannot establish success. Earlier releases scored survival alone, including
-untouched trays, so their success rates are not comparable to this criterion.
+`ball_tray_balancing` requires both grippers to hold distinct handles while
+the tray is lifted throughout the sampled countdown (10–15 seconds). Lift
+requires a 1 mm height gain from randomized reset and no tray/table contact.
+Handle contact gaps up to 0.1 seconds are tolerated; longer gaps or returning
+to the table reset the countdown. Completion qualifies success, but native
+eval continues to a 30-second timeout or failure. A later ball loss revokes
+success; release or setdown after qualification is allowed while retaining
+the ball. Loss uses the actual scaled, rotated floor collision box: the ball
+center must remain inside its XY footprint and above its top plane, with a
+configurable 1 micrometre plane tolerance. The smaller safe centering region
+remains a progress diagnostic and does not cause failure.
+
+The evaluator reports
+`success_semantics: held_lifted_countdown_then_survive_timeout`,
+`countdown_qualified`, `timed_out`, `tray_lifted`, `tray_table_contact`,
+`tray_height_gain_m`, and physical floor/ball geometry. Qpos without a bound
+task runtime cannot establish success. Runtime constructor options
+`min_lift_height_m` and `timeout_s` (also supported in randomization metadata)
+configure the lift threshold and rollout deadline. Earlier versions scored
+passive survival or ended immediately at countdown completion; their success
+rates are not comparable to this criterion.
+
+`conveyor_pick` fails as soon as an object leaves the belt without prior genuine
+pickup or placement in the container. Pickup requires opposing finger contacts
+and actual clearance above the belt. Failure and pickup history are captured
+at physics substeps and cannot be undone by returning an object later.
+
+`grab_specific_object_from_clutter` fails immediately on wrong-object insertion.
+A released target resting on the crate floor starts a configurable
+`settling_s=3.0` deadline; it must remain inside at that deadline. Direct
+pose probes without a simulation clock cannot complete the settling window.
+
+MuJoCo instability warnings (BADQPOS, BADQVEL, BADQACC) or time regression stop
+CPU stepping with a simulator error before an automatic-reset frame is scored.
+Eval records use `status: simulation_error` and null success for these episodes.
+They are excluded from model success/reward denominators and counted separately
+as `num_sim_errors`; attempted trial counts remain available. The guard does not
+identify the numerical cause of an instability. Batched GPU divergence errors
+are also excluded; the CPU warning guard is not a new GPU instability detector.
 
 `put_relative` rejects startup prompts already satisfying the evaluator's
 directional placement band, using the same float32 geometry and the positions
@@ -533,13 +564,18 @@ on the handle. The scorer checks a bounded set of points on the actual peg
 segment inside the collision-derived handle x envelope, so a peg tip or
 asymmetric opening can qualify without crossing the vessel-center plane.
 Every candidate retains the solid-occupancy and four-ray enclosure checks;
-no extrapolation beyond the peg or dense uniform search is used. Collision checks reject table support, stacked mugs,
-robot contact, unsupported mug stacks, and deep mesh penetration. Shallow
+no extrapolation beyond the peg or dense uniform search is used. The default
+requires at least 25% of mug weight from the threaded peg, allowing shared
+peg/trunk support. This deliberately differs from version 2's 50% minimum;
+set `support_weight_fraction=0.5` explicitly to retain that threshold.
+Collision checks reject table support, robot contact, unsupported mug stacks,
+and deep mesh penetration. Shallow
 trunk/base or unused-peg bracing is permitted alongside genuine handle/peg
 support; bracing never earns peg-load credit. Shallow mug-to-mug tangency is
 allowed only when both mugs independently meet the threaded-handle load and
-release requirements. Placing mug centers near the tree no longer establishes success. Live scoring uses MuJoCo
-contacts/forces; qpos batches reconstruct contacts with `mj_forward`, including
+release requirements. Placing mug centers near the tree no longer establishes
+success. Live scoring uses MuJoCo contacts/forces; qpos batches reconstruct
+contacts with `mj_forward`, including
 each world's randomized static rack pose. Force values can differ during
 motion because qpos-only reconstruction does not include velocity; the settled
 positive regressions check both paths.
@@ -547,12 +583,12 @@ positive regressions check both paths.
 The six peg collision geoms are named in the bundled scene so mesh scaling
 preserves their identity. Vessel/handle geometry is derived again for each
 compiled mug variant/scale. Configurable evaluator options are
-`support_weight_fraction` (default 0.5), `bottom_slice_fraction` (0.1),
+`support_weight_fraction` (default 0.25), `bottom_slice_fraction` (0.1),
 `geometry_tolerance_m` (0.00001), and `max_penetration_m` (0.002). The geometry
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **2.0.3**,
+`abc_sim/VERSION` now records simulator task/protocol version **3.0.0**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
