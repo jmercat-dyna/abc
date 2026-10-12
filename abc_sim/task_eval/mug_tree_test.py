@@ -322,3 +322,70 @@ def test_real_mesh_solid_handle_occupancy_is_not_an_empty_opening():
         for sign in (-1, 1)
     )
     assert evaluator._inside_mug_solid(data, evaluator._mug_geoms[0], point, model)
+
+
+def test_reused_qpos_scratch_discards_stale_dynamic_state():
+    _model, data, evaluator = scene()
+    qpos = data.qpos[None].copy()
+    expected = evaluator.evaluate_qpos_batch(qpos).to_info()
+    scratch = evaluator._qpos_scratch_data
+    scratch.qvel[:] = 100
+    scratch.qfrc_applied[:] = 100
+    scratch.xfrc_applied[:] = 100
+    scratch.qacc_warmstart[:] = 100
+    scratch.time = 100
+    actual = evaluator.evaluate_qpos_batch(qpos).to_info()
+    assert evaluator._qpos_scratch_data is scratch
+    assert actual == expected
+
+
+def test_qpos_scratch_is_replaced_when_static_tree_model_changes():
+    model, data, evaluator = scene()
+    evaluator.evaluate_qpos_batch(data.qpos[None])
+    old_scratch = evaluator._qpos_scratch_data
+    evaluator.configure_from_randomization(
+        model,
+        SimpleNamespace(
+            object_states={
+                "mug_tree": {"pos": [0.3, 0, 0.2], "quat": [1, 0, 0, 0]},
+            }
+        ),
+    )
+    moved_qpos = data.qpos[None].copy()
+    moved_qpos[0, 0] += 0.3
+    assert evaluator.evaluate_qpos_batch(moved_qpos).scalar_success()
+    assert evaluator._qpos_scratch_data is not old_scratch
+    assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_threading_geometry_is_cached_only_within_one_sample(monkeypatch):
+    root = ET.fromstring(BASE_XML)
+    mug = root.find("worldbody/body[@name='mug_1']")
+    top = copy.deepcopy(mug.find("geom[@name='handle_top']"))
+    top.set("name", "second_handle_top_collision_piece")
+    mug.append(top)
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    evaluator = MugOnRackEvaluator(
+        model=model, spec=get_task_spec("hang_mug_on_mug_rack")
+    )
+    original = evaluator._peg_threaded
+    calls = []
+
+    def track(data, index, peg, model):
+        calls.append((index, peg))
+        return original(data, index, peg, model)
+
+    monkeypatch.setattr(evaluator, "_peg_threaded", track)
+    first = evaluator.evaluate_model_data(model, data)
+    assert first.scalar_success()
+    assert data.ncon >= 2
+    assert len(calls) == len(set(calls)) == 1
+    # A changed pose must recompute and reject threading; no cached success
+    # can survive into the next evaluation.
+    data.qpos[:3] = [0.067, 0.055, 0.281]
+    mujoco.mj_forward(model, data)
+    second = evaluator.evaluate_model_data(model, data)
+    assert not second.scalar_success()
+    assert len(calls) == 2

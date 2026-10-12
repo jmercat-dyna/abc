@@ -67,6 +67,8 @@ class MugOnRackEvaluator:
     def _bind_model(self, model: mujoco.MjModel) -> None:
         self.model = model
         self._qpos_model: mujoco.MjModel | None = None
+        self._qpos_scratch_model: mujoco.MjModel | None = None
+        self._qpos_scratch_data: mujoco.MjData | None = None
         self.mug_names, self._mug_qpos_addrs = self._resolve_mug_qpos_addrs(
             model, self._mug_joint_regex
         )
@@ -189,6 +191,8 @@ class MugOnRackEvaluator:
             states = randomization.get("object_states")
         tree = states.get(self._tree_body_name) if isinstance(states, dict) else None
         self._qpos_model = None
+        self._qpos_scratch_model = None
+        self._qpos_scratch_data = None
         if isinstance(tree, dict):
             self._qpos_model = copy.deepcopy(model)
             self._qpos_model.body_pos[self._tree_body_id] = tree["pos"]
@@ -435,6 +439,7 @@ class MugOnRackEvaluator:
         threaded = np.zeros(count, dtype=bool)
         upward = -np.asarray(model.opt.gravity) / np.linalg.norm(model.opt.gravity)
         force = np.zeros(6)
+        threaded_checks: dict[tuple[int, int], bool] = {}
         for i, geoms in enumerate(self._mug_geoms):
             for contact_index in range(data.ncon):
                 contact = data.contact[contact_index]
@@ -450,7 +455,10 @@ class MugOnRackEvaluator:
                 ):
                     other_contact[i] = True
                     continue
-                if not self._peg_threaded(data, i, other, model):
+                pair = (i, other)
+                if pair not in threaded_checks:
+                    threaded_checks[pair] = self._peg_threaded(data, i, other, model)
+                if not threaded_checks[pair]:
                     other_contact[i] = True
                     continue
                 body = self._mug_bodies[i]
@@ -498,7 +506,15 @@ class MugOnRackEvaluator:
         if qpos_batch.shape[0] != self._nworld:
             self.reset(nworld=qpos_batch.shape[0])
         model = self._qpos_model if self._qpos_model is not None else self.model
-        data = mujoco.MjData(model)
+        if self._qpos_scratch_model is not model or self._qpos_scratch_data is None:
+            self._qpos_scratch_model = model
+            self._qpos_scratch_data = mujoco.MjData(model)
+        else:
+            # A batch formerly started with a fresh MjData. Clear velocities,
+            # controls, external forces and solver warm-start state at that
+            # same boundary, while preserving reuse between rows in a batch.
+            mujoco.mj_resetData(model, self._qpos_scratch_data)
+        data = self._qpos_scratch_data
         samples = []
         for qpos in qpos_batch:
             data.qpos[:] = qpos
