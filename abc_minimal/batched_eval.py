@@ -27,6 +27,7 @@ from abc_minimal.eval_policy import (
     progress_text,
     video_frame,
     without_missing_counts,
+    world_success_flags,
 )
 from abc_sim.batched_env import BatchedWarpYAMEnv
 from abc_sim.task_eval import TaskEvalResult
@@ -70,10 +71,27 @@ def rewards(result: TaskEvalResult | None, num_worlds: int) -> np.ndarray:
 
 
 def over(result: TaskEvalResult | None, num_worlds: int) -> np.ndarray:
-    """Per-world rollout_over: ever_failed for maintenance tasks, else ever_success."""
+    """Per-world termination, preserving legacy maintenance evaluator behavior."""
     if result is None:
         return np.zeros(num_worlds, dtype=bool)
-    flags = result.metrics.get("ever_failed", result.metrics.get("ever_success"))
+    if (
+        result.metrics.get("success_semantics")
+        == "held_lifted_countdown_then_survive_timeout"
+    ):
+        flags = np.logical_or(
+            result.metrics.get("timed_out", False),
+            result.metrics.get("ever_failed", False),
+        )
+    elif result.metrics.get("success_semantics") in {
+        "held_countdown_complete",
+        "latched_success_until_unpicked_object_lost",
+        "placed_target_settle_until_terminal_failure",
+    }:
+        flags = np.logical_or(
+            result.metrics["ever_success"], result.metrics.get("ever_failed", False)
+        )
+    else:
+        flags = result.metrics.get("ever_failed", result.metrics.get("ever_success"))
     return np.asarray(flags, dtype=bool)
 
 
@@ -297,11 +315,14 @@ def rollout_batched_worlds(
             wall_s = time.perf_counter() - t0
             for index, world_index in enumerate(batch):
                 final_eval = world_eval(last_result[index], index, keys)
+                success, final_success = world_success_flags(
+                    final_eval, failed=bool(diverged[index])
+                )
                 world = {
                     "world_index": world_index,
                     "world_seed": env.seeds[index],
-                    "success": bool(final_eval["ever_success"]),
-                    "final_success": bool(final_eval["success"]),
+                    "success": success,
+                    "final_success": final_success,
                     "reward": float(final_eval["reward"]),
                     "max_reward": float(max_reward[index]),
                     "steps": int(steps[index]),
@@ -315,6 +336,13 @@ def rollout_batched_worlds(
                 }
                 if diverged[index]:
                     world["diverged"] = True
+                    world["sim_error"] = "MJWarp physics diverged to non-finite qpos"
+                    world["status"] = "simulation_error"
+                    world["success"] = None
+                    world["final_success"] = None
+                else:
+                    world["sim_error"] = None
+                    world["status"] = "valid"
                 worlds.append(world)
                 print(
                     f"world={world_index:03d} done success={world['success']} "

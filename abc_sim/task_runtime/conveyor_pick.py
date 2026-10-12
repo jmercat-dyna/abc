@@ -7,9 +7,10 @@ from typing import Any
 import mujoco
 import numpy as np
 
-
 _OBJECT_COUNT = 3
-_OBJECT_JOINTS = tuple(f"conveyor_object_{idx}_joint" for idx in range(1, _OBJECT_COUNT + 1))
+_OBJECT_JOINTS = tuple(
+    f"conveyor_object_{idx}_joint" for idx in range(1, _OBJECT_COUNT + 1)
+)
 _OBJECT_BODIES = tuple(f"conveyor_object_{idx}" for idx in range(1, _OBJECT_COUNT + 1))
 _ROLLER_ACTUATORS = (
     "conveyor_infeed_roller_vel",
@@ -26,11 +27,16 @@ class ConveyorPickRuntime:
     """Drive conveyor rollers and kinematically carry objects on the belt."""
 
     def __init__(self) -> None:
-        self._object_controls: tuple[tuple[int, int, tuple[int, ...]], ...] | None = None
+        self._object_controls: tuple[tuple[int, int, tuple[int, ...]], ...] | None = (
+            None
+        )
         self._roller_actuators: tuple[int, ...] | None = None
         self._belt_geom_id: int | None = None
         self._last_active_objects: tuple[int, ...] = ()
         self._belt_speed_y = _DEFAULT_BELT_SPEED_Y
+        self._pick_scorer = None
+        self._picked_objects: set[str] = set()
+        self._missed_objects: set[str] = set()
 
     def bind(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         """Reset cached model indices after a model/data change."""
@@ -39,6 +45,9 @@ class ConveyorPickRuntime:
         self._roller_actuators = None
         self._belt_geom_id = None
         self._last_active_objects = ()
+        self._pick_scorer = None
+        self._picked_objects.clear()
+        self._missed_objects.clear()
 
     def after_reset(
         self,
@@ -50,6 +59,11 @@ class ConveyorPickRuntime:
         """Clear runtime bookkeeping after reset."""
 
         self._last_active_objects = ()
+        self._pick_scorer = (
+            None  # Refresh proxies after any in-place randomized scale edits.
+        )
+        self._picked_objects.clear()
+        self._missed_objects.clear()
         self._belt_speed_y = self._speed_from_randomization(randomization)
         self._open_idle_grippers(model, data)
         mujoco.mj_forward(model, data)
@@ -74,7 +88,11 @@ class ConveyorPickRuntime:
                 needs_forward = True
             else:
                 if idx in self._last_active_objects:
-                    data.qvel[qvel_adr + 1] = 0.0
+                    axis = data.geom_xmat[self._belt_geom_for(model)].reshape(3, 3)[
+                        :, 1
+                    ]
+                    velocity = data.qvel[qvel_adr : qvel_adr + 3]
+                    velocity -= axis * float(velocity @ axis)
         if needs_forward:
             mujoco.mj_forward(model, data)
         self._last_active_objects = tuple(active_objects)
@@ -91,12 +109,34 @@ class ConveyorPickRuntime:
                 self._damp_angular_velocity(data, qvel_adr)
                 active_objects.append(idx)
         self._last_active_objects = tuple(active_objects)
+        # Sample every physics substep, so a brief genuine grasp or a missed
+        # object cannot disappear between the evaluator's control-step calls.
+        if self._pick_scorer is None or self._pick_scorer.model is not model:
+            from abc_sim.task_eval.conveyor import ConveyorPickObjectsInBinEvaluator
+            from abc_sim.task_specs import get_task_spec
+
+            self._pick_scorer = ConveyorPickObjectsInBinEvaluator(
+                model=model, spec=get_task_spec("conveyor_pick")
+            )
+        sample = self._pick_scorer._sample(data, picked_history=self._picked_objects)
+        for i, name in enumerate(self._pick_scorer.object_names):
+            if sample["object_picked_now_mask"][i]:
+                self._picked_objects.add(name)
+            if (
+                not sample["object_on_belt_mask"][i]
+                and not sample["object_in_bin_mask"][i]
+                and name not in self._picked_objects
+            ):
+                self._missed_objects.add(name)
 
     def debug_state(self) -> dict[str, Any]:
         """Return task runtime diagnostics for dashboards/debuggers."""
 
         return {
             "active_objects": self._last_active_objects,
+            "picked_objects": tuple(sorted(self._picked_objects)),
+            "missed_objects": tuple(sorted(self._missed_objects)),
+            "belt_motion_frame": "belt_geom_local_y",
             "belt_speed_y": self._belt_speed_y,
             "belt_speed_m_s": abs(self._belt_speed_y),
             "belt_direction_y": float(np.sign(self._belt_speed_y)),
@@ -113,9 +153,13 @@ class ConveyorPickRuntime:
 
         speed_y = float(metadata["belt_speed_y"])
         if not np.isfinite(speed_y):
-            raise RuntimeError("conveyor_pick randomization provided a non-finite belt_speed_y")
+            raise RuntimeError(
+                "conveyor_pick randomization provided a non-finite belt_speed_y"
+            )
         if abs(speed_y) < 1e-9:
-            raise RuntimeError("conveyor_pick randomization provided a zero belt_speed_y")
+            raise RuntimeError(
+                "conveyor_pick randomization provided a zero belt_speed_y"
+            )
         return speed_y
 
     def _roller_speed(self) -> float:
@@ -128,8 +172,12 @@ class ConveyorPickRuntime:
         qpos_adr: int,
         qvel_adr: int,
     ) -> None:
-        data.qpos[qpos_adr + 1] += self._belt_speed_y * float(model.opt.timestep)
-        data.qvel[qvel_adr + 1] = 0.0
+        axis = data.geom_xmat[self._belt_geom_for(model)].reshape(3, 3)[:, 1]
+        data.qpos[qpos_adr : qpos_adr + 3] += (
+            axis * self._belt_speed_y * float(model.opt.timestep)
+        )
+        velocity = data.qvel[qvel_adr : qvel_adr + 3]
+        velocity -= axis * float(velocity @ axis)
 
     def _open_idle_grippers(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         for prefix in ("left", "right"):
@@ -149,11 +197,19 @@ class ConveyorPickRuntime:
                 f"{prefix}_gripper",
             )
             if left_joint < 0 or right_joint < 0 or gripper_actuator < 0:
-                raise RuntimeError(f"conveyor_pick scene is missing {prefix} gripper controls")
+                raise RuntimeError(
+                    f"conveyor_pick scene is missing {prefix} gripper controls"
+                )
 
-            data.qpos[model.jnt_qposadr[left_joint]] = float(model.jnt_range[left_joint][1])
-            data.qpos[model.jnt_qposadr[right_joint]] = float(model.jnt_range[right_joint][0])
-            data.ctrl[gripper_actuator] = float(model.actuator_ctrlrange[gripper_actuator][1])
+            data.qpos[model.jnt_qposadr[left_joint]] = float(
+                model.jnt_range[left_joint][1]
+            )
+            data.qpos[model.jnt_qposadr[right_joint]] = float(
+                model.jnt_range[right_joint][0]
+            )
+            data.ctrl[gripper_actuator] = float(
+                model.actuator_ctrlrange[gripper_actuator][1]
+            )
 
     def _damp_angular_velocity(self, data: mujoco.MjData, qvel_adr: int) -> None:
         data.qvel[qvel_adr + 3 : qvel_adr + 6] *= _BELT_CONTACT_ANGULAR_DAMPING
@@ -164,7 +220,9 @@ class ConveyorPickRuntime:
 
         geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, _BELT_GEOM)
         if geom_id < 0:
-            raise RuntimeError(f"conveyor_pick scene is missing belt geom: {_BELT_GEOM}")
+            raise RuntimeError(
+                f"conveyor_pick scene is missing belt geom: {_BELT_GEOM}"
+            )
 
         self._belt_geom_id = int(geom_id)
         return self._belt_geom_id
@@ -195,7 +253,9 @@ class ConveyorPickRuntime:
         self._roller_actuators = tuple(actuator_ids)
         return self._roller_actuators
 
-    def _object_controls_for(self, model: mujoco.MjModel) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
+    def _object_controls_for(
+        self, model: mujoco.MjModel
+    ) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
         if self._object_controls is not None:
             return self._object_controls
 

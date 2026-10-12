@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as _ET
+from dataclasses import asdict
 from pathlib import Path as _Path
-from typing import Any
+from typing import Any, ClassVar
 
 import mujoco
 import numpy as np
 
+from abc_sim.put_relative_config import DEFAULT_PUT_RELATIVE_CONFIG, PutRelativeConfig
+from abc_sim.put_relative_geometry import relative_placement_geometry
+
 from ..assets.inhand import _inhand_parse_model_xml
 from ..assets.paths import _MODELS_DIR
 from ..core import (
+    RandomizationSamplingError,
     RandomizationState,
     SceneRandomizer,
     _parse_float_list,
@@ -350,6 +355,8 @@ def _put_relative_build_xml(selections: list[dict[str, Any]]) -> str:
 def _put_relative_sample_prompt(
     objects: list[dict[str, Any]],
     rng: np.random.Generator,
+    *,
+    scoring_config: PutRelativeConfig = DEFAULT_PUT_RELATIVE_CONFIG,
 ) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for mover in objects:
@@ -371,6 +378,18 @@ def _put_relative_sample_prompt(
                 if float(np.linalg.norm(mover_xy - goal_xy)) < (
                     _PUT_RELATIVE_GOAL_RADIUS_M + mover_radius
                 ):
+                    continue
+                # At spawn the mover is already placed. Reject the entire
+                # evaluator goal band, not just the exact generated goal.
+                _, _, already_solved = relative_placement_geometry(
+                    # The generated body/home XML stores positions to 4 dp.
+                    # Score those actual reset positions at float32 precision.
+                    np.asarray([float(f"{value:.4f}") for value in mover_xy]),
+                    np.asarray([float(f"{value:.4f}") for value in reference_xy]),
+                    np.asarray(offset),
+                    config=scoring_config,
+                )
+                if already_solved:
                     continue
                 phrase = _PUT_RELATIVE_DIRECTION_PHRASES[direction]
                 mover_label = str(mover["label"])
@@ -406,21 +425,22 @@ def _put_relative_sample_prompt(
                     }
                 )
     if not candidates:
-        raise RuntimeError("put_relative generated no valid prompt candidates")
+        raise RandomizationSamplingError("put_relative generated no valid prompt candidates")
     return candidates[int(rng.integers(0, len(candidates)))]
 
 
 class PutRelativeRandomizer(SceneRandomizer):
     """Reload put_relative with sampled object assets and a relative prompt."""
 
-    perturbations: list = []
+    perturbations: ClassVar[list] = []
 
-    def __init__(self) -> None:
+    def __init__(self, *, scoring_config: PutRelativeConfig = DEFAULT_PUT_RELATIVE_CONFIG) -> None:
         super().__init__()
+        self.scoring_config = scoring_config
         self._variants: dict[str, list[_Path]] = {}
 
-    def clone(self) -> "SceneRandomizer":
-        return type(self)()
+    def clone(self) -> SceneRandomizer:
+        return type(self)(scoring_config=self.scoring_config)
 
     def prepare_env(self) -> None:
         if self._env_ref is not None:
@@ -473,7 +493,7 @@ class PutRelativeRandomizer(SceneRandomizer):
                     selections.append(candidate)
                     break
             else:
-                raise RuntimeError("put_relative could not place non-overlapping objects")
+                raise RandomizationSamplingError("put_relative could not place non-overlapping objects")
         return selections
 
     def randomize(
@@ -484,15 +504,19 @@ class PutRelativeRandomizer(SceneRandomizer):
         request: Any | None = None,
     ) -> RandomizationState:
         rng = np.random.default_rng(seed)
+        evaluator = getattr(self._env_ref, "_task_evaluator", None)
+        scoring_config = getattr(evaluator, "config", self.scoring_config)
         for _ in range(_PUT_RELATIVE_MAX_PROMPT_TRIES):
-            selections = self._sample_selections(rng)
             try:
-                prompt_info = _put_relative_sample_prompt(selections, rng)
+                selections = self._sample_selections(rng)
+                prompt_info = _put_relative_sample_prompt(
+                    selections, rng, scoring_config=scoring_config
+                )
                 break
-            except RuntimeError:
+            except RandomizationSamplingError:
                 continue
         else:
-            raise RuntimeError("put_relative could not sample a valid relative prompt")
+            raise RandomizationSamplingError("put_relative could not sample a valid relative prompt")
 
         xml = _put_relative_build_xml(selections)
         xml = _put_relative_apply_scene_transforms(
@@ -532,6 +556,7 @@ class PutRelativeRandomizer(SceneRandomizer):
             )
 
         metadata = {
+            "scoring_config": asdict(scoring_config),
             "prompt": str(prompt_info["prompt"]),
             "prompt_type": prompt_info["prompt_type"],
             "mover_object": prompt_info["mover_object"],

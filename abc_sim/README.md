@@ -274,11 +274,57 @@ real measurement. The unscored four — `put_markers_in_top_drawer`,
 score themselves: they warn at startup and report reward 0 and success 0
 throughout. Watch the videos to judge those.
 
-One task is scored differently: `ball_tray_balancing` is a maintenance task
-(success means the ball has not been dropped yet), so its rollouts run the full
-chunk budget and its `success_rate` is only comparable between runs with equal
-`--num-chunks` — a 10-chunk run asks the policy to hold the ball for 5 seconds,
-a 30-chunk run for 15.
+`ball_tray_balancing` requires both grippers to hold distinct handles while
+the tray is lifted throughout the sampled countdown (10–15 seconds). Lift
+requires a 1 mm height gain from randomized reset and no tray/table contact.
+Handle contact gaps up to 0.1 seconds are tolerated; longer gaps or returning
+to the table reset the countdown. Completion qualifies success, but native
+eval continues to a 30-second timeout or failure. A later ball loss revokes
+success; release or setdown after qualification is allowed while retaining
+the ball. Loss uses the actual scaled, rotated floor collision box: the ball
+center must remain inside its XY footprint and above its top plane, with a
+configurable 1 micrometre plane tolerance. The smaller safe centering region
+remains a progress diagnostic and does not cause failure.
+
+The evaluator reports
+`success_semantics: held_lifted_countdown_then_survive_timeout`,
+`countdown_qualified`, `timed_out`, `tray_lifted`, `tray_table_contact`,
+`tray_height_gain_m`, and physical floor/ball geometry. Qpos without a bound
+task runtime cannot establish success. Runtime constructor options
+`min_lift_height_m` and `timeout_s` (also supported in randomization metadata)
+configure the lift threshold and rollout deadline. Earlier versions scored
+passive survival or ended immediately at countdown completion; their success
+rates are not comparable to this criterion.
+
+`conveyor_pick` fails as soon as an object leaves the belt without prior genuine
+pickup or placement in the container. Pickup requires opposing finger contacts
+and actual clearance above the belt. Failure and pickup history are captured
+at physics substeps and cannot be undone by returning an object later.
+
+`grab_specific_object_from_clutter` fails immediately on wrong-object insertion.
+A released target resting on the crate floor starts a configurable
+`settling_s=3.0` deadline; it must remain inside at that deadline. Direct
+pose probes without a simulation clock cannot complete the settling window.
+
+MuJoCo instability warnings (BADQPOS, BADQVEL, BADQACC) or time regression stop
+CPU stepping with a simulator error before an automatic-reset frame is scored.
+Eval records use `status: simulation_error` and null success for these episodes.
+They are excluded from model success/reward denominators and counted separately
+as `num_sim_errors`; attempted trial counts remain available. The guard does not
+identify the numerical cause of an instability. Batched GPU divergence errors
+are also excluded; the CPU warning guard is not a new GPU instability detector.
+
+`put_relative` rejects startup prompts already satisfying the evaluator's
+directional placement band, using the same float32 geometry and the positions
+serialized into the generated scene XML. Transient layout/prompt failures
+retry within randomization; exhaustion raises `RandomizationSamplingError`
+for an outer eval retry. Asset/XML errors remain permanent errors.
+
+Asset-free regression checks for these invariants and native termination:
+```bash
+python -m pytest -q abc_sim/task_eval/ball_tray_test.py \
+  abc_sim/randomization/tasks/put_relative_test.py abc_minimal/eval_policy_test.py
+```
 
 Task names, aliases, and prompts are listed in `abc_sim/task_specs.py`, and an
 unrecognized `--task` fails immediately with the full catalogue in the error.
@@ -404,9 +450,9 @@ Rows before the conveyor retrain were measured under MuJoCo 3.6; the repo now
 pins 3.8, and contact-heavy tasks are sensitive to the engine step (the
 dishrack 20k checkpoint re-measures at 12/20 on seed A under 3.8).
 
-Reading notes: ball_tray is the maintenance task -- every world earned full
-hold-duration credit but the strict criterion asks the policy to hold roughly
-4x longer than any demonstration, so its zero is a horizon artifact. lego is
+Reading notes: the ball_tray row used the historical survival-only evaluator,
+whose full instantaneous progress did not establish grasping or countdown
+completion. Re-evaluate those checkpoints with the corrected scorer. lego is
 the opposite case: 73% of its demonstrations are longer than the default
 236-chunk budget, so its row is measured at `--num-chunks 400` (its published
 eval summaries too); at the default budget every world times out mid-sort. The
@@ -464,10 +510,9 @@ Two reading notes when comparing against those numbers:
   knocked back out, or still touching the gripper at the end, subtracts from
   `mean_reward` but not from `mean_max_progress`). `success_rate` is stricter
   than both: every object placed simultaneously, at any instant. On a
-  maintenance task (one that reports `ever_failed`, like
-  `ball_tray_balancing`) the reading flips: progress starts maximal and can
-  only be lost, so `mean_max_progress` reads ≈1.0 regardless of when the ball
-  drops — read `success_rate` there.
+  ball-tray task, the centering reward can start maximal even without a grasp,
+  so `mean_max_progress` reads ≈1.0 regardless of whether the countdown
+  completes — read `success_rate` and `countdown_complete` there.
 - Training remaps some sim task names before they become prompts, so two
   catalogue tasks read best under a prompt that differs from their spec
   default. For checkpoints trained on the xdof + sim mixtures: the put-bottles
@@ -492,6 +537,73 @@ randomizer has no list of task names to update. Counts must fit the sampled scen
 
 Regression checks: `python -m pytest abc_sim/randomization/tasks/count_box_test.py`.
 The reset and scoring checks require YAM assets (`prepare.py --sim-task count_into_opaque_box`).
+
+Counting retains final-state success: reaching the exact count does not end an
+episode. Inserting more eligible objects than requested, or any ineligible
+object, into the measured interior below the lid ends the episode as failure.
+This treats insertion as committed: removing an object later cannot recover
+the episode. Objects above the ceiling/on the lid or outside the box do not
+trigger this criterion. It does not attempt to prove physical irreversibility.
+
+`ever_failed` and `terminal_failure` latch independently for each world.
+`failure_reason` records the first cause (`eligible_overfill`,
+`ineligible_object`, or `overfill_and_ineligible`); `ever_correct` still records
+whether the requested contents were ever present. Native scalar and batched
+rollouts stop failed worlds and ensure terminal failure overrides reported
+success. Reset/model reload clears failure history. These stop rules change
+the evaluation protocol; historical final-state results may differ.
+
+Asset-free geometry, insertion trajectory, per-world stopping, and reload
+regressions: `python -m pytest -q abc_sim/task_eval/count_box_test.py`.
+
+## Mug-rack scoring and simulator versions
+
+`hang_mug_on_mug_rack` requires every mug to hang independently after release.
+A rack peg must enter an empty, enclosed handle opening and bear upward load
+on the handle. The scorer checks a bounded set of points on the actual peg
+segment inside the collision-derived handle x envelope, so a peg tip or
+asymmetric opening can qualify without crossing the vessel-center plane.
+Every candidate retains the solid-occupancy and four-ray enclosure checks;
+no extrapolation beyond the peg or dense uniform search is used. The default
+requires at least 25% of mug weight from the threaded peg, allowing shared
+peg/trunk support. This deliberately differs from version 2's 50% minimum;
+set `support_weight_fraction=0.5` explicitly to retain that threshold.
+Collision checks reject table support, robot contact, unsupported mug stacks,
+and deep mesh penetration. Shallow
+trunk/base or unused-peg bracing is permitted alongside genuine handle/peg
+support; bracing never earns peg-load credit. Shallow mug-to-mug tangency is
+allowed only when both mugs independently meet the threaded-handle load and
+release requirements. Placing mug centers near the tree no longer establishes
+success. Live scoring uses MuJoCo contacts/forces; qpos batches reconstruct
+contacts with `mj_forward`, including
+each world's randomized static rack pose. Force values can differ during
+motion because qpos-only reconstruction does not include velocity; the settled
+positive regressions check both paths.
+
+The six peg collision geoms are named in the bundled scene so mesh scaling
+preserves their identity. Vessel/handle geometry is derived again for each
+compiled mug variant/scale. Configurable evaluator options are
+`support_weight_fraction` (default 0.25), `bottom_slice_fraction` (0.1),
+`geometry_tolerance_m` (0.00001), and `max_penetration_m` (0.002). The geometry
+assumes the shipped assets' handles protrude along local -y and are thin in x;
+a different asset convention needs an updated geometry contract.
+
+`abc_sim/VERSION` now records simulator task/protocol version **3.0.0**,
+independently of the `abc-minimal` policy package version. Read it with
+`abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
+compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
+changes, including the retrospective 1.0.0 baseline before mug scoring changed.
+
+Regression command:
+```bash
+python -m pytest -q abc_sim/task_eval/mug_tree_test.py abc_sim/version_test.py
+```
+The mug suite runs without downloaded assets; additional production-mesh
+positives run when the full task/YAM assets are installed. A CPU audit found
+settled live/batch positives for 14 of 19 mug variants. Four searches did not
+find a valid pose and one candidate lost support while settling: these are
+coverage gaps, not proof those variants are impossible. No filtering of those
+variants is introduced.
 
 ## Assets
 
@@ -614,6 +726,34 @@ regardless of `CUDA_VISIBLE_DEVICES`.
 The camera renderers behind these backends live under `abc_sim/rendering/`.
 
 ## Adding a New Env or Task
+
+### Put-relative scoring configuration
+
+`abc_sim/put_relative_config.py` defines the validated `PutRelativeConfig`: along-axis
+minimum/maximum, lateral tolerance and placement-height tolerance. These distances
+are scoring settings, not geometry constants. The shared geometry helper reads this
+config, and a bound sampler uses the effective evaluator config so an override cannot
+produce an already-solved scene under a different success region.
+
+Use the existing task-spec configuration path to change settings:
+
+```python
+from dataclasses import replace
+import abc_sim
+from abc_sim.task_specs import get_task_spec
+
+spec = replace(
+    get_task_spec("put_relative"),
+    evaluator_options=(("along_min_m", 0.08), ("along_max_m", 0.25), ("perp_max_m", 0.04)),
+)
+env = abc_sim.make_env(task=spec, render_cameras=False)
+```
+
+Existing direct evaluator constructor overrides remain supported. Standalone prompt
+sampling accepts `scoring_config=PutRelativeConfig(...)`. Sampling metadata and
+evaluator metrics record `scoring_config`; replay with different settings raises a
+clear error. Distances must be finite/nonnegative and the along-axis interval nonempty.
+Changing these settings changes the evaluation protocol and requires separate results.
 
 At minimum, a new task needs:
 

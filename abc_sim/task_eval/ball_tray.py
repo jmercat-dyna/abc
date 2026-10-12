@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import mujoco
 import numpy as np
 
 from abc_sim.task_eval.base import TaskEvalResult
 from abc_sim.task_specs import SimTaskSpec
 
+if TYPE_CHECKING:
+    from abc_sim.task_runtime.ball_tray import BallTrayBalancingRuntime
+
 
 class BallTrayBalancingEvaluator:
-    """Score whether the ball has remained on the open tray."""
+    """Require a completed held countdown with the ball still on the tray."""
 
     def __init__(
         self,
@@ -19,16 +24,28 @@ class BallTrayBalancingEvaluator:
         spec: SimTaskSpec,
         ball_joint_name: str = "ball_tray_ball_joint",
         tray_site_name: str = "ball_tray_center_site",
+        floor_geom_name: str = "ball_tray_floor_collision",
+        ball_geom_name: str = "ball_tray_ball_geom",
         usable_half_extents_m: tuple[float, float] = (0.126, 0.1215),
         ball_radius_m: float = 0.022,
-        dropped_local_z_threshold_m: float = 0.008,
+        geometry_tolerance_m: float = 1e-6,
     ) -> None:
         self.spec = spec
+        self._runtime: BallTrayBalancingRuntime | None = None
         self._ball_joint_name = ball_joint_name
         self._tray_site_name = tray_site_name
+        self._floor_geom_name = floor_geom_name
+        self._ball_geom_name = ball_geom_name
         self._usable_half_extents = np.asarray(usable_half_extents_m, dtype=np.float32)
         self._ball_radius_m = float(ball_radius_m)
-        self._dropped_local_z_threshold_m = float(dropped_local_z_threshold_m)
+        self._geometry_tolerance_m = float(geometry_tolerance_m)
+        if (
+            not np.isfinite(self._geometry_tolerance_m)
+            or self._geometry_tolerance_m < 0
+        ):
+            raise ValueError(
+                "Ball tray geometry_tolerance_m must be finite and nonnegative"
+            )
         self._bind_model(model)
         self.reset(nworld=1)
 
@@ -45,11 +62,31 @@ class BallTrayBalancingEvaluator:
         )
         if self._tray_site_id < 0:
             raise ValueError(f"Site {self._tray_site_name!r} not found in model")
+        self._floor_geom_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, self._floor_geom_name
+        )
+        self._ball_geom_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, self._ball_geom_name
+        )
+        if self._floor_geom_id < 0 or self._ball_geom_id < 0:
+            raise ValueError(
+                "Ball tray scoring requires the physical floor and ball geoms"
+            )
+        if model.geom_type[self._floor_geom_id] != mujoco.mjtGeom.mjGEOM_BOX:
+            raise ValueError("Ball tray floor must be a box")
+        if model.geom_type[self._ball_geom_id] != mujoco.mjtGeom.mjGEOM_SPHERE:
+            raise ValueError("Ball tray ball must be a sphere")
 
     def reset(self, *, nworld: int = 1) -> None:
         self._nworld = int(nworld)
         self._alive = np.ones((self._nworld,), dtype=bool)
         self._ever_failed = np.zeros((self._nworld,), dtype=bool)
+        self._ever_success = np.zeros((self._nworld,), dtype=bool)
+        self._countdown_qualified = np.zeros((self._nworld,), dtype=bool)
+
+    def bind_runtime(self, runtime: BallTrayBalancingRuntime) -> None:
+        """Use the environment's contact/countdown state, not qpos alone."""
+        self._runtime = runtime
 
     def configure_from_randomization(
         self,
@@ -119,10 +156,12 @@ class BallTrayBalancingEvaluator:
 
     def _sample_metrics_from_data(self, data: mujoco.MjData) -> dict[str, np.ndarray]:
         ball_pos = np.asarray(
-            data.qpos[self._ball_qpos_addr: self._ball_qpos_addr + 3],
+            data.qpos[self._ball_qpos_addr : self._ball_qpos_addr + 3],
             dtype=np.float32,
         ).copy()
-        tray_center = np.asarray(data.site_xpos[self._tray_site_id], dtype=np.float32).copy()
+        tray_center = np.asarray(
+            data.site_xpos[self._tray_site_id], dtype=np.float32
+        ).copy()
         rot_world_from_tray = np.asarray(
             data.site_xmat[self._tray_site_id],
             dtype=np.float32,
@@ -132,12 +171,20 @@ class BallTrayBalancingEvaluator:
         normalized_center_error = np.max(
             np.abs(local_pos[:2]) / self._usable_half_extents
         ).astype(np.float32)
-        inside_tray = np.array(
+        inside_safe_region = np.array(
             np.all(np.abs(local_pos[:2]) <= self._usable_half_extents),
             dtype=bool,
         )
+        floor_local_pos = np.asarray(data.geom_xmat[self._floor_geom_id]).reshape(
+            3, 3
+        ).T @ (data.geom_xpos[self._ball_geom_id] - data.geom_xpos[self._floor_geom_id])
+        floor_half_size = self.model.geom_size[self._floor_geom_id]
+        ball_radius = float(self.model.geom_size[self._ball_geom_id, 0])
+        inside_tray = np.array(
+            np.all(np.abs(floor_local_pos[:2]) <= floor_half_size[:2]), dtype=bool
+        )
         ball_dropped = np.array(
-            local_pos[2] < self._dropped_local_z_threshold_m,
+            floor_local_pos[2] <= floor_half_size[2] + self._geometry_tolerance_m,
             dtype=bool,
         )
         return {
@@ -145,8 +192,15 @@ class BallTrayBalancingEvaluator:
             "tray_center": tray_center,
             "ball_tray_local_pos": local_pos.astype(np.float32),
             "center_error_m": np.array(center_error, dtype=np.float32),
-            "normalized_center_error": np.array(normalized_center_error, dtype=np.float32),
+            "normalized_center_error": np.array(
+                normalized_center_error, dtype=np.float32
+            ),
             "inside_tray": inside_tray,
+            "inside_safe_region": inside_safe_region,
+            "ball_floor_local_pos": floor_local_pos.astype(np.float32),
+            "physical_floor_half_extents_m": floor_half_size[:2].astype(np.float32),
+            "floor_top_local_z_m": np.array(floor_half_size[2], dtype=np.float32),
+            "physical_ball_radius_m": np.array(ball_radius, dtype=np.float32),
             "ball_dropped": ball_dropped,
         }
 
@@ -158,7 +212,9 @@ class BallTrayBalancingEvaluator:
         if current_balanced.ndim == 0:
             current_balanced = current_balanced[None]
             metrics = {
-                key: value[None] if np.asarray(value).ndim > 0 else np.asarray(value)[None]
+                key: value[None]
+                if np.asarray(value).ndim > 0
+                else np.asarray(value)[None]
                 for key, value in metrics.items()
             }
         if current_balanced.shape[0] != self._nworld:
@@ -170,26 +226,49 @@ class BallTrayBalancingEvaluator:
         tray_radius = max(float(np.linalg.norm(self._usable_half_extents)), 1e-6)
         reward = np.clip(1.0 - center_error / tray_radius, 0.0, 1.0).astype(np.float32)
         reward = np.where(self._alive, reward, 0.0).astype(np.float32)
+        runtime_state = self._runtime.debug_state() if self._runtime is not None else {}
+        handles_held = bool(runtime_state.get("handles_held", False))
+        countdown_complete = bool(
+            runtime_state.get("countdown_completed_within_timeout", False)
+        )
+        tray_lifted = bool(runtime_state.get("tray_lifted", False))
+        self._countdown_qualified |= (
+            self._alive & handles_held & tray_lifted & countdown_complete
+        )
+        success = self._alive & self._countdown_qualified
+        self._ever_success = success.copy()
 
         return TaskEvalResult(
             reward=reward,
-            success=self._alive.copy(),
+            success=success,
             metrics={
                 **metrics,
                 "current_balanced": current_balanced.copy(),
                 "alive": self._alive.copy(),
                 "ever_failed": self._ever_failed.copy(),
-                # Balancing is a maintenance task, so the episode counts as a
-                # success for as long as it has not yet dropped the ball. The
-                # rollout loops read ever_success by key on every action.
-                "ever_success": np.logical_not(self._ever_failed),
+                "ever_success": self._ever_success.copy(),
+                "success_semantics": "held_lifted_countdown_then_survive_timeout",
+                "countdown_qualified": self._countdown_qualified.copy(),
+                "timed_out": np.full(
+                    (self._nworld,), bool(runtime_state.get("timed_out", False))
+                ),
+                "timeout_s": float(runtime_state.get("timeout_s", 30.0)),
+                "handles_held": handles_held,
+                "tray_lifted": tray_lifted,
+                "tray_table_contact": bool(
+                    runtime_state.get("tray_table_contact", False)
+                ),
+                "tray_height_gain_m": float(
+                    runtime_state.get("tray_height_gain_m", 0.0)
+                ),
+                "countdown_complete": countdown_complete,
                 "usable_half_extents_m": np.broadcast_to(
                     self._usable_half_extents,
                     (self._nworld, 2),
                 ).copy(),
                 "ball_radius_m": np.full(
                     (self._nworld,),
-                    self._ball_radius_m,
+                    float(self.model.geom_size[self._ball_geom_id, 0]),
                     dtype=np.float32,
                 ),
             },
