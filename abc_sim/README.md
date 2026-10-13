@@ -588,7 +588,7 @@ compiled mug variant/scale. Configurable evaluator options are
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **3.0.0**,
+`abc_sim/VERSION` now records simulator task/protocol version **3.0.1**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
@@ -804,3 +804,20 @@ env.close()
 Use `info["task_success"]` and `info["task_eval"]` for success-conditioned
 metrics, curricula, or offline analysis. Use `reset_info["randomization"]` to
 record and replay fixed worlds across policies.
+
+### Nuts-and-bolts integration stability
+
+Simulator 3.0.1 disables midpoint integration for the nuts-and-bolts scene
+through the `invdiscrete` flag while retaining `implicitfast`. On MuJoCo 3.8.1,
+the previous midpoint update makes the small nut's rotational damping add
+energy instead of dissipating it. The isolated small-spin reproduction and
+captured pre-divergence state remain stable with the opt-out.
+
+Mass, inertia, damping, friction and the 2 ms timestep are preserved. The flag
+is accepted by the pinned MuJoCo Warp upload paths and preserves rendering and
+GPU batching; Warp forward stepping does not use midpoint integration.
+Discrete inverse dynamics is not used by the simulator's task/eval paths.
+Other scenes retain their existing options. The instability guard remains
+active. These checks establish a specific nuts integration fix, not a repair
+for chess Hessian errors or a replay of the original learned-policy actions.
+Version dynamics separately when comparing evaluations.

@@ -7,6 +7,21 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.0.1
+
+- Disable free-body midpoint integration only for the nuts-and-bolts scene
+  under the pinned MuJoCo 3.8.1 runtime, using `implicitfast` with the supported
+  `invdiscrete` opt-out flag. The previous midpoint update makes nut rotational
+  damping add energy: a 0.1 rad/s rotation doubles each 2 ms step and triggers
+  BADQACC instead of dissipating energy.
+- Preserve mass, inertia, damping, friction, contacts, timestep and scoring.
+  The task-specific flag keeps rendering/batching compatible with the pinned
+  MuJoCo Warp versions; switching to `implicit` would reject models in the
+  upstream 3.8.0.3 backend. No discrete inverse-dynamics caller is used here.
+- Retain instability detection and separate simulator-error accounting. This
+  numerical fix changes task dynamics and requires separately versioned results.
+  It does not claim to fix the independently observed chess solver errors.
+
 ## 3.0.0
 
 - Ball-tray balancing now uses the actual scaled, rotated collision floor
