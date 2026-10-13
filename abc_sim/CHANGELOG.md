@@ -7,6 +7,15 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.1.1
+
+- Explicitly preserve the canonical MJWarp 3.10 background color
+  `(0.1, 0.1, 0.2, 1.0)` in both direct rendering and Madrona background
+  capture. MJWarp 3.15 defaults to black; inheriting that default changes
+  policy observations despite identical scene and camera poses.
+- Preserve physics and scoring. This patch restores the intended
+  training-compatible appearance; learned-policy validation remains pending.
+
 ## 3.1.0
 
 - Adopt the matched MuJoCo 3.15.0, MuJoCo Warp 3.15.0 and Warp 1.18.0
