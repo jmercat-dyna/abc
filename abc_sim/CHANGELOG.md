@@ -7,6 +7,15 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.0.2
+
+- Normalize grab-clutter collision type values to Python integers. Newer
+  MuJoCo enum bindings compare differently with NumPy scalar tuple membership;
+  cylinders/capsules otherwise fail constructor geometry checks. Existing
+  primitive regressions pass under MuJoCo 3.8.1 and 3.15.0.
+- This compatibility candidate preserves scoring and the existing dependency
+  pins. Testing a newer engine is separate from adopting it as the default.
+
 ## 3.0.1
 
 - Disable free-body midpoint integration only for the nuts-and-bolts scene
