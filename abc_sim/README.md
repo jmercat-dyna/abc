@@ -821,3 +821,14 @@ Other scenes retain their existing options. The instability guard remains
 active. These checks establish a specific nuts integration fix, not a repair
 for chess Hessian errors or a replay of the original learned-policy actions.
 Version dynamics separately when comparing evaluations.
+
+### Runtime 3.1.0
+
+The default matched stack is MuJoCo 3.15.0, MuJoCo Warp 3.15.0 and Warp 1.18.0.
+Upgrade all three together: older Warp adapters reference model fields removed
+by the newer engine. Create a fresh environment from the dependency declarations.
+Record `sim_version` and engine versions with evaluations and do not combine
+3.1.0 outcomes with previous-engine outcomes. XML models can be rebuilt, but
+old binary models and packed integration states cannot be loaded across engines.
+Contact support can change for identical recorded poses; scorer thresholds are
+unchanged. CUDA rendering and learned-policy evaluation still require a GPU smoke.

@@ -7,6 +7,23 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.1.0
+
+- Adopt the matched MuJoCo 3.15.0, MuJoCo Warp 3.15.0 and Warp 1.18.0
+  runtime as the default. Remove the obsolete MuJoCo version override.
+- Normalize primitive enum values to Python integers for compatible cylinder
+  and capsule detection across MuJoCo/NumPy versions.
+- Preserve scoring thresholds and simulator-error accounting. Contact manifolds
+  and force allocation can change: 299/300 sampled training pose rescores
+  retain their outcome/status, while one mug falls below the unchanged 25%
+  peg-load cutoff. Keep new results separate from previous-engine results.
+- Retain the task-local nuts midpoint opt-out for compatibility; the new engine
+  also remains stable without it in three full-length bounded-control tests.
+- Old binary models and packed integration states are not portable across this
+  engine change. Rebuild XML and map named state fields for cross-version replay.
+- CPU physics, recorded replay and CPU rendering checks passed; CUDA rendering
+  and learned-policy evaluations remain unverified pending GPU allocation.
+
 ## 3.0.1
 
 - Disable free-body midpoint integration only for the nuts-and-bolts scene

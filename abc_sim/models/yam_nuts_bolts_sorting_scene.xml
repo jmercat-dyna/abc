@@ -3,7 +3,8 @@
 
   <!-- MuJoCo 3.8.1's free-body midpoint update can amplify rotational
        damping on the small nuts. invdiscrete opts out of that update while
-       retaining implicitfast, which the pinned MJWarp backend supports. -->
+       retaining implicitfast. Kept for backward compatibility; MuJoCo 3.15
+       also dissipates this rotation without the opt-out. -->
   <option integrator="implicitfast">
     <flag invdiscrete="enable"/>
   </option>
