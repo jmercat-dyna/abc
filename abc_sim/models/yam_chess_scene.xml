@@ -1,7 +1,12 @@
 <mujoco model="yam_chess">
   <compiler angle="radian" meshdir="assets" texturedir="assets"/>
 
-  <option integrator="implicitfast"/>
+  <!-- MuJoCo 3.8.1 multicontact clipping can emit impossible pawn/tin-floor
+       contact positions and a rank-deficient Hessian. Retain native CCD with
+       one contact per convex pair; leave other tasks' contact coverage intact. -->
+  <option integrator="implicitfast">
+    <flag multiccd="disable"/>
+  </option>
 
   <visual>
     <global azimuth="120" elevation="-20" offwidth="1920" offheight="1080"/>

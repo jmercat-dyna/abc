@@ -588,7 +588,7 @@ compiled mug variant/scale. Configurable evaluator options are
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **3.0.1**,
+`abc_sim/VERSION` now records simulator task/protocol version **3.1.2**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
@@ -822,13 +822,35 @@ active. These checks establish a specific nuts integration fix, not a repair
 for chess Hessian errors or a replay of the original learned-policy actions.
 Version dynamics separately when comparing evaluations.
 
-### Runtime 3.1.0
+### Runtime 3.1.2
 
 The default matched stack is MuJoCo 3.15.0, MuJoCo Warp 3.15.0 and Warp 1.18.0.
 Upgrade all three together: older Warp adapters reference model fields removed
 by the newer engine. Create a fresh environment from the dependency declarations.
 Record `sim_version` and engine versions with evaluations and do not combine
-3.1.0 outcomes with previous-engine outcomes. XML models can be rebuilt, but
+3.1.2 outcomes with previous-engine outcomes. XML models can be rebuilt, but
 old binary models and packed integration states cannot be loaded across engines.
 Contact support can change for identical recorded poses; scorer thresholds are
-unchanged. CUDA rendering and learned-policy evaluation still require a GPU smoke.
+unchanged. The completed bottle policy comparison scored 32/50 on the full latest
+stack versus 42/50 canonical; the crossed observation/physics comparisons do not
+establish equivalence. The newer runtime is retained as selected, with this
+compatibility limitation recorded separately from visual improvements.
+
+### Chess collision guard on the latest runtime
+
+Both chess scenes use native single-contact CCD. The reduced real pawn/floor
+regression reproduces malformed contacts and a Hessian error on MuJoCo 3.8.1;
+MuJoCo 3.15 already corrects that historical fault. The explicit task-local option
+preserves the validated collision choice without changing other scenes, geometry,
+solver, timestep, masses, friction or scoring. Released support and separated
+objects are checked under the combined runtime.
+
+Run `python -m pytest -q abc_sim/chess_collision_test.py`. The historical failing
+case runs only on 3.8.1; actual mesh regressions require the shipped chess assets.
+The 400-attempt canonical-runtime validation used source 98f61a5 / version 3.0.2;
+it does not certify this latest-runtime combination's learned-policy outcomes.
+
+Use `uv sync` for the matched runtime. Its explicit MuJoCo 3.15.0 override
+reconciles the i2rt deployment extra's older 3.3.5 declaration. On the tested
+CUDA 12 / driver 550 evaluation hosts, use the official Warp 1.18.0+cu12 build;
+the default CUDA 13 wheel does not run on those drivers.

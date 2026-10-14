@@ -1,7 +1,11 @@
 <mujoco model="yam_chess">
   <compiler angle="radian" meshdir="assets" texturedir="assets"/>
 
-  <option integrator="implicitfast"/>
+  <!-- Same task-local MuJoCo 3.8.1 pawn/tin-floor clipping workaround as the
+       fixed chess scene; preserve the native single-contact collision path. -->
+  <option integrator="implicitfast">
+    <flag multiccd="disable"/>
+  </option>
 
   <visual>
     <global azimuth="120" elevation="-20" offwidth="1920" offheight="1080"/>

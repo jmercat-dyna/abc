@@ -7,6 +7,23 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.1.2
+
+- Preserve the merged MuJoCo 3.15.0 / MuJoCo Warp 3.15.0 / Warp 1.18.0 runtime,
+  canonical renderer background, scoring and simulator-error accounting.
+- Disable multicontact CCD only in the fixed and flexible chess scenes. This
+  retains the task-local collision guard validated against malformed pawn/floor
+  contacts on MuJoCo 3.8.1; 3.15 already fixes that historical engine fault.
+  Solver, timestep, geometry, masses and friction are unchanged.
+- Keep a managed uv MuJoCo 3.15.0 override: the i2rt deployment extra still
+  declares MuJoCo 3.3.5 and otherwise makes project resolution fail.
+- Add actual-mesh captured-contact, released-support and separation regressions
+  for both chess variants. Keep the historical failing reproduction conditional
+  on MuJoCo 3.8.1. Version 3.0.2 canonical-runtime rollout evidence is separate
+  from validation of this combined latest-runtime source.
+- The full latest-runtime bottle comparison remains 32/50 versus 42/50 canonical.
+  Retaining the selected newer runtime does not establish policy equivalence.
+
 ## 3.1.1
 
 - Explicitly preserve the canonical MJWarp 3.10 background color
