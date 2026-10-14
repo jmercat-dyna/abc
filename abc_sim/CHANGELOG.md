@@ -7,22 +7,48 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
-## 3.0.2
+## 3.1.2
 
-- Disable multicontact CCD only in the fixed and flexible chess scenes.
-  MuJoCo 3.8.1 emits impossible contact positions for a captured pawn/tin-floor
-  pair, causing the sparse Newton Hessian to lose rank. Native single-contact
-  CCD removes the malformed contact without changing solver, timestep, masses,
-  friction, geometry or task scoring.
-- Preserve the canonical CPU MuJoCo 3.8.1 / MuJoCo Warp 3.10.0.3 / Warp 1.14.0
-  runtime. The known mixed-version stack requires uv's explicit CPU override;
-  MJWarp's declared dependency alone requires a newer CPU engine.
-- Explicitly preserve the canonical renderer background in direct MJWarp
-  rendering and Madrona background capture. Retain simulator-error accounting;
-  failures remain invalid simulator episodes, not failed model trials.
-- Exact original Linux model/state/control replay reproduces the historical
-  chess exception; the single-contact candidate survives the same recorded
-  controls through the full timeout. Closed-loop policy validation is pending.
+- Preserve the merged MuJoCo 3.15.0 / MuJoCo Warp 3.15.0 / Warp 1.18.0 runtime,
+  canonical renderer background, scoring and simulator-error accounting.
+- Disable multicontact CCD only in the fixed and flexible chess scenes. This
+  retains the task-local collision guard validated against malformed pawn/floor
+  contacts on MuJoCo 3.8.1; 3.15 already fixes that historical engine fault.
+  Solver, timestep, geometry, masses and friction are unchanged.
+- Keep a managed uv MuJoCo 3.15.0 override: the i2rt deployment extra still
+  declares MuJoCo 3.3.5 and otherwise makes project resolution fail.
+- Add actual-mesh captured-contact, released-support and separation regressions
+  for both chess variants. Keep the historical failing reproduction conditional
+  on MuJoCo 3.8.1. Version 3.0.2 canonical-runtime rollout evidence is separate
+  from validation of this combined latest-runtime source.
+- The full latest-runtime bottle comparison remains 32/50 versus 42/50 canonical.
+  Retaining the selected newer runtime does not establish policy equivalence.
+
+## 3.1.1
+
+- Explicitly preserve the canonical MJWarp 3.10 background color
+  `(0.1, 0.1, 0.2, 1.0)` in both direct rendering and Madrona background
+  capture. MJWarp 3.15 defaults to black; inheriting that default changes
+  policy observations despite identical scene and camera poses.
+- Preserve physics and scoring. This patch restores the intended
+  training-compatible appearance; learned-policy validation remains pending.
+
+## 3.1.0
+
+- Adopt the matched MuJoCo 3.15.0, MuJoCo Warp 3.15.0 and Warp 1.18.0
+  runtime as the default. Remove the obsolete MuJoCo version override.
+- Normalize primitive enum values to Python integers for compatible cylinder
+  and capsule detection across MuJoCo/NumPy versions.
+- Preserve scoring thresholds and simulator-error accounting. Contact manifolds
+  and force allocation can change: 299/300 sampled training pose rescores
+  retain their outcome/status, while one mug falls below the unchanged 25%
+  peg-load cutoff. Keep new results separate from previous-engine results.
+- Retain the task-local nuts midpoint opt-out for compatibility; the new engine
+  also remains stable without it in three full-length bounded-control tests.
+- Old binary models and packed integration states are not portable across this
+  engine change. Rebuild XML and map named state fields for cross-version replay.
+- CPU physics, recorded replay and CPU rendering checks passed; CUDA rendering
+  and learned-policy evaluations remain unverified pending GPU allocation.
 
 ## 3.0.1
 

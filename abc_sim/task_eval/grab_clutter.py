@@ -131,7 +131,7 @@ class GrabClutterTargetInBoxEvaluator:
 
     @staticmethod
     def _geom_points(model: mujoco.MjModel, geom: int) -> np.ndarray:
-        kind = model.geom_type[geom]
+        kind = int(model.geom_type[geom])
         if kind == mujoco.mjtGeom.mjGEOM_MESH:
             mesh = int(model.geom_dataid[geom])
             start, count = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
@@ -203,7 +203,7 @@ class GrabClutterTargetInBoxEvaluator:
             for geom in geoms:
                 rotation = box_rotation.T @ data.geom_xmat[geom].reshape(3, 3)
                 center = (data.geom_xpos[geom] - box_position) @ box_rotation
-                kind = self.model.geom_type[geom]
+                kind = int(self.model.geom_type[geom])
                 radius, half_length = self.model.geom_size[geom, :2]
                 if kind == mujoco.mjtGeom.mjGEOM_SPHERE:
                     extent = np.full(3, radius)
