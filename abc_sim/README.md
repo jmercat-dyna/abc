@@ -588,7 +588,7 @@ compiled mug variant/scale. Configurable evaluator options are
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **3.0.1**,
+`abc_sim/VERSION` now records simulator task/protocol version **3.0.2**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
@@ -821,3 +821,33 @@ Other scenes retain their existing options. The instability guard remains
 active. These checks establish a specific nuts integration fix, not a repair
 for chess Hessian errors or a replay of the original learned-policy actions.
 Version dynamics separately when comparing evaluations.
+
+### Chess collision stability and canonical runtime
+
+Simulator 3.0.2 disables multicontact CCD only in the fixed and flexible chess
+scenes. A captured MuJoCo 3.8.1 pawn/tin-floor collision generated contact
+positions billions of metres outside the scene, making the sparse Newton
+Hessian lose rank. Native single-contact CCD keeps those contacts on the actual
+objects. The original Linux model, initial state and recorded controls reproduce
+the historical exception; the candidate completes those controls through the
+120-second timeout without warnings or resets. Released pawn/floor support and
+separation regressions also pass. Closed-loop learned-policy validation remains
+pending, so this is a numerical repair candidate, not a policy success claim.
+
+Other tasks retain multicontact coverage. Solver, timestep, collision geometry,
+masses, friction and scoring are preserved. The simulator-instability guard and
+invalid-episode accounting remain active. This change reduces convex surface
+contacts in chess; compare new results within version 3.0.2.
+
+The canonical runtime is CPU MuJoCo **3.8.1**, MuJoCo Warp **3.10.0.3** and Warp
+**1.14.0**. Use `uv sync`: `tool.uv.override-dependencies` deliberately preserves
+the validated mixed stack even though MJWarp's package metadata requires CPU
+MuJoCo >=3.9. Ordinary pip dependency resolution cannot resolve these exact pins
+without an override. MJWarp renders observations while CPU MuJoCo steps physics.
+The renderer background is explicitly `(0.1, 0.1, 0.2, 1.0)` to preserve the
+canonical appearance, including Madrona background capture. The separately
+tested 3.15 adoption branch is not selected by this numerical repair.
+
+Run `python -m pytest -q abc_sim/chess_collision_test.py` for the reduced real
+pawn collision, support and separation regressions. The historical negative
+requires MuJoCo 3.8.1; mesh tests run when the shipped chess assets are installed.

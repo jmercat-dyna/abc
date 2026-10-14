@@ -7,6 +7,23 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.0.2
+
+- Disable multicontact CCD only in the fixed and flexible chess scenes.
+  MuJoCo 3.8.1 emits impossible contact positions for a captured pawn/tin-floor
+  pair, causing the sparse Newton Hessian to lose rank. Native single-contact
+  CCD removes the malformed contact without changing solver, timestep, masses,
+  friction, geometry or task scoring.
+- Preserve the canonical CPU MuJoCo 3.8.1 / MuJoCo Warp 3.10.0.3 / Warp 1.14.0
+  runtime. The known mixed-version stack requires uv's explicit CPU override;
+  MJWarp's declared dependency alone requires a newer CPU engine.
+- Explicitly preserve the canonical renderer background in direct MJWarp
+  rendering and Madrona background capture. Retain simulator-error accounting;
+  failures remain invalid simulator episodes, not failed model trials.
+- Exact original Linux model/state/control replay reproduces the historical
+  chess exception; the single-contact candidate survives the same recorded
+  controls through the full timeout. Closed-loop policy validation is pending.
+
 ## 3.0.1
 
 - Disable free-body midpoint integration only for the nuts-and-bolts scene
