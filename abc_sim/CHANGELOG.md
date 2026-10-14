@@ -7,6 +7,47 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.1.1
+
+- Explicitly preserve the canonical MJWarp 3.10 background color
+  `(0.1, 0.1, 0.2, 1.0)` in both direct rendering and Madrona background
+  capture. MJWarp 3.15 defaults to black; inheriting that default changes
+  policy observations despite identical scene and camera poses.
+- Preserve physics and scoring. This patch restores the intended
+  training-compatible appearance; learned-policy validation remains pending.
+
+## 3.1.0
+
+- Adopt the matched MuJoCo 3.15.0, MuJoCo Warp 3.15.0 and Warp 1.18.0
+  runtime as the default. Remove the obsolete MuJoCo version override.
+- Normalize primitive enum values to Python integers for compatible cylinder
+  and capsule detection across MuJoCo/NumPy versions.
+- Preserve scoring thresholds and simulator-error accounting. Contact manifolds
+  and force allocation can change: 299/300 sampled training pose rescores
+  retain their outcome/status, while one mug falls below the unchanged 25%
+  peg-load cutoff. Keep new results separate from previous-engine results.
+- Retain the task-local nuts midpoint opt-out for compatibility; the new engine
+  also remains stable without it in three full-length bounded-control tests.
+- Old binary models and packed integration states are not portable across this
+  engine change. Rebuild XML and map named state fields for cross-version replay.
+- CPU physics, recorded replay and CPU rendering checks passed; CUDA rendering
+  and learned-policy evaluations remain unverified pending GPU allocation.
+
+## 3.0.1
+
+- Disable free-body midpoint integration only for the nuts-and-bolts scene
+  under the pinned MuJoCo 3.8.1 runtime, using `implicitfast` with the supported
+  `invdiscrete` opt-out flag. The previous midpoint update makes nut rotational
+  damping add energy: a 0.1 rad/s rotation doubles each 2 ms step and triggers
+  BADQACC instead of dissipating energy.
+- Preserve mass, inertia, damping, friction, contacts, timestep and scoring.
+  The task-specific flag keeps rendering/batching compatible with the pinned
+  MuJoCo Warp versions; switching to `implicit` would reject models in the
+  upstream 3.8.0.3 backend. No discrete inverse-dynamics caller is used here.
+- Retain instability detection and separate simulator-error accounting. This
+  numerical fix changes task dynamics and requires separately versioned results.
+  It does not claim to fix the independently observed chess solver errors.
+
 ## 3.0.0
 
 - Ball-tray balancing now uses the actual scaled, rotated collision floor

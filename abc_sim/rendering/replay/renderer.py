@@ -13,6 +13,11 @@ import numpy as np
 # the MuJoCo model on reset.
 PER_EPISODE_MODEL_FIELDS = ("body_pos", "body_quat", "mat_rgba")
 
+# Match the canonical MJWarp 3.10 training-compatible background. Newer
+# renderers default to black, which changes policy observations even when the
+# scene and camera poses are identical. Use this for Madrona compositing too.
+CANONICAL_BACKGROUND_COLOR = (0.1, 0.1, 0.2, 1.0)
+
 
 def _sanitize_missing_int_fields(device_struct, cls) -> None:
     for field in dataclasses.fields(cls):
@@ -438,6 +443,7 @@ class RendererWrapper:
                 render_depth=[False] * self.ncam,
                 use_textures=True,
                 use_shadows=True,
+                background_color=CANONICAL_BACKGROUND_COLOR,
             )
             self._bg = None
         else:
@@ -490,6 +496,7 @@ class RendererWrapper:
             render_depth=[False] * mjm_bg.ncam,
             use_textures=True,
             use_shadows=True,
+            background_color=CANONICAL_BACKGROUND_COLOR,
         )
         self._mjw.refit_bvh(m_bg, d_bg, rc)
         self._mjw.render(m_bg, d_bg, rc)
