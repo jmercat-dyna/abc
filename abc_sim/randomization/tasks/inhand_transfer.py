@@ -10,6 +10,8 @@ from ..assets.inhand import (
     _INHAND_CATEGORIES,
     _INHAND_SCALE_FACTOR_RANGE,
     _OBJ_Z,
+    _SPAWN_CLEARANCE_M,
+    _TABLE_TOP_Z,
     _X_MAX,
     _X_MIN,
     _Y_LEFT_MAX,
@@ -22,6 +24,44 @@ from ..assets.inhand import (
     _inhand_get_variants,
 )
 from ..core import RandomizationState, SceneRandomizer, _yaw_from_quat
+
+
+def _body_collision_bottom_z(model: Any, data: Any, body: int) -> float:
+    """Lowest world z of ``body``'s collision geoms at the current kinematics."""
+    bottom = np.inf
+    for geom in range(model.ngeom):
+        if int(model.geom_bodyid[geom]) != body:
+            continue
+        if not (model.geom_contype[geom] or model.geom_conaffinity[geom]):
+            continue
+        rotation = np.asarray(data.geom_xmat[geom]).reshape(3, 3)
+        mesh = int(model.geom_dataid[geom])
+        if model.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH and mesh >= 0:
+            start = int(model.mesh_vertadr[mesh])
+            vertices = model.mesh_vert[start:start + int(model.mesh_vertnum[mesh])]
+            low = float((vertices @ rotation[2]).min()) + float(data.geom_xpos[geom][2])
+        else:
+            center = data.geom_xpos[geom] + rotation @ model.geom_aabb[geom, :3]
+            low = float(center[2] - np.abs(rotation[2]) @ model.geom_aabb[geom, 3:])
+        bottom = min(bottom, low)
+    return float(bottom)
+
+
+def _rest_object_on_table(env: Any, qadr: int) -> float:
+    """Shift the task object vertically so its collision bottom clears the table.
+
+    Object origins sit anywhere relative to their meshes (cheese graters'
+    collision bottoms are 0.10-0.25 m below the origin), so a fixed spawn
+    height leaves some objects inside the table, where contact ejects them.
+    Returns the new origin height.
+    """
+    body = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "task_object")
+    mujoco.mj_kinematics(env.model, env.data)
+    bottom = _body_collision_bottom_z(env.model, env.data, body)
+    if np.isfinite(bottom):
+        env.data.qpos[qadr + 2] += _TABLE_TOP_Z + _SPAWN_CLEARANCE_M - bottom
+    mujoco.mj_forward(env.model, env.data)
+    return float(env.data.qpos[qadr + 2])
 
 class InHandTransferRandomizer(SceneRandomizer):
     """Randomizer for inhand_transfer: swaps the entire MuJoCo model on each reset.
@@ -66,6 +106,7 @@ class InHandTransferRandomizer(SceneRandomizer):
             self._rng = np.random.default_rng(seed)
 
         env = self._env_ref
+        z = _OBJ_Z
         categories = _INHAND_CATEGORIES
         category = categories[int(self._rng.integers(0, len(categories)))]
         variants = self._get_variants(category)
@@ -99,14 +140,14 @@ class InHandTransferRandomizer(SceneRandomizer):
             w, s = np.cos(yaw / 2), np.sin(yaw / 2)
             env.data.qpos[qadr:qadr + 3] = [x, y, _OBJ_Z]
             env.data.qpos[qadr + 3:qadr + 7] = [w, 0, 0, s]
-            mujoco.mj_forward(env.model, env.data)
+            z = _rest_object_on_table(env, qadr)
             env._inhand_category = category
             env._inhand_variant = variant_dir.name
             env._inhand_side = side
 
         return RandomizationState(
             seed=seed or 0,
-            object_states={"task_object_joint": {"pos": [x, y, _OBJ_Z], "quat": [np.cos(yaw/2), 0, 0, np.sin(yaw/2)]}},
+            object_states={"task_object_joint": {"pos": [x, y, z], "quat": [np.cos(yaw/2), 0, 0, np.sin(yaw/2)]}},
             scale_states={"task_object_joint": scale_factor},
             metadata={"category": category, "variant": variant_dir.name, "side": side},
         )
@@ -145,7 +186,9 @@ class InHandTransferRandomizer(SceneRandomizer):
         qadr = env.model.jnt_qposadr[jnt_id]
         env.data.qpos[qadr:qadr + 3] = pos
         env.data.qpos[qadr + 3:qadr + 7] = quat
-        mujoco.mj_forward(env.model, env.data)
+        # Re-derive the height so states recorded before the spawn-height fix
+        # replay without the object inside the table; a no-op for new states.
+        _rest_object_on_table(env, qadr)
         env._inhand_category = category
         env._inhand_variant = variant_name
         env._inhand_side = state.metadata.get("side")

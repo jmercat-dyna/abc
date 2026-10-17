@@ -38,6 +38,9 @@ from ..requests import WaterBottleResetRequest, _WaterBottlePlacementFailure
 
 class BottlesRandomizer(SceneRandomizer):
     min_clearance_m = 0.08
+    # Table bounds apply to bottle origins only; a bottle lying near the back
+    # or a side edge can reach the room wall with its neck and cap.
+    static_penetration_tolerance_m = 0.001
     perturbations = [
         # Bottles placed near edges so range covers a large area of the table.
         # table_bounds check ensures nothing falls off regardless of delta size.
@@ -49,6 +52,25 @@ class BottlesRandomizer(SceneRandomizer):
         PerturbRange("bin_joint", delta_x=(-0.05, 0.03), delta_y=(-0.2, 0.2),
                      delta_yaw=(-0.5, 0.5)),
     ]
+
+    def _contacts_ok(self, model: Any, data: Any) -> bool:
+        """Also reject objects that start inside static scene geometry (walls)."""
+        if not super()._contacts_ok(model, data):
+            return False
+        object_roots = {
+            int(model.body_rootid[body]) for body in self._randomized_object_body_ids(model)
+        }
+        for index in range(data.ncon):
+            contact = data.contact[index]
+            if contact.dist >= -self.static_penetration_tolerance_m:
+                continue
+            roots = {
+                int(model.body_rootid[int(model.geom_bodyid[contact.geom1])]),
+                int(model.body_rootid[int(model.geom_bodyid[contact.geom2])]),
+            }
+            if 0 in roots and roots & object_roots:
+                return False
+        return True
 
 
 class WaterBottleRandomizer(SceneRandomizer):

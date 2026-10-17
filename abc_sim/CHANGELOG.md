@@ -30,6 +30,37 @@ versioned protocol.
   warning for every free object with a point-like inertia or a centre of mass
   outside its collision box (`abc_sim.mass_properties`). No bundled task
   triggers it.
+- Spawn overlaps that ejected objects on the first steps (fixed at the
+  placement source; affected seeds get new layouts, all others are unchanged):
+  - `inhand_transfer_item_to_other_side`: the object used to spawn with its
+    origin at z = 0.82 whatever its size. Cheese graters' collision bottoms
+    sit 0.10-0.25 m below their origin, so every grater variant started up to
+    10 cm inside the table and was launched 1-10 m; some 1.2x water bottles and
+    dish brushes started up to 3 cm inside and hopped. The object is now
+    lowered or raised so its lowest collision vertex is 2 mm above the table,
+    on reset and on `apply()` replay (a recorded legacy z is re-derived), and
+    the recorded `pos` holds that height. Upright graters now rest with their
+    origin 0.85-0.93 m high, above the evaluator's 0.85 m resting limit, so an
+    upright grater cannot score; scoring is unchanged.
+  - `set_up_chess_pieces_on_board`: the tin/board clearance test ignored the
+    tin's yaw and under-sized both footprints, and after 100 failed tin
+    candidates the last (overlapping) one was used. The test now also checks
+    the compiled, yawed collision footprints with 1 cm clearance and resamples
+    the setup when no tin pose fits (seeds 20260568, 20260581, 20260590,
+    20260599 and 20260602 had the tin 13-31 mm inside the board). Tilted
+    pieces in the tin that lean into a wall are pushed back out along the
+    contact normal, and a setup with a tin contact deeper than 2 mm is
+    rejected. In `knocked_setup`, pieces may no longer start more than 2 mm
+    inside each other (seeds 20260517, 20260543, 20260549).
+  - `throw_plastic_bottles_in_bin`: table bounds constrain bottle origins only,
+    so a lying bottle near the back or a side edge had its cap or neck 1-15 mm
+    inside the room wall (13/100 seeds; 4 ejected). Placements whose objects
+    start more than 1 mm inside static scene geometry are now resampled.
+- Every reset checks the free objects' reset pose and logs a warning for any
+  object more than 5 mm inside another collision geom
+  (`abc_sim.initial_penetration`), once per object pair and env. Several
+  bundled tasks still trigger it with overlaps that settle without ejecting
+  anything (see the README).
 
 ## 3.1.2
 

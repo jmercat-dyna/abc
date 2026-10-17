@@ -14,6 +14,7 @@ import mujoco
 import numpy as np
 
 from abc_sim.config import RobotSystemConfig
+from abc_sim.initial_penetration import warn_on_free_object_penetrations
 from abc_sim.mass_properties import warn_on_free_object_mass_problems
 from abc_sim.rendering.live import LiveRenderBackend, create_live_camera_provider
 from abc_sim.task_eval import TaskEvalResult, make_task_evaluator
@@ -348,6 +349,14 @@ class MuJoCoYAMEnv(gym.Env):
                 randomization=self._last_randomization,
             )
             self._sync_prompt_from_task_runtime()
+
+        # Placements change every reset; report free objects spawned inside
+        # other geometry, which the contact solver would eject.
+        if not hasattr(self, "_penetration_warned"):
+            self._penetration_warned: set[tuple[str, str]] = set()
+        warn_on_free_object_penetrations(
+            self.model, self.data, already_warned=self._penetration_warned
+        )
 
         self._reset_camera_backend()
         if self._task_evaluator is not None:

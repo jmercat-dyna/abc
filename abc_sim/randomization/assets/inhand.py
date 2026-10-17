@@ -40,6 +40,10 @@ _X_MIN, _X_MAX = 0.42, 0.78
 _Y_LEFT_MIN, _Y_LEFT_MAX = 0.10, 0.40
 _Y_RIGHT_MIN, _Y_RIGHT_MAX = -0.40, -0.10
 _OBJ_Z = 0.82
+# Top of the table_plane collision geom in yam_inhand_transfer_base.xml.
+_TABLE_TOP_Z = 0.75
+# Gap between the object's lowest collision point and the table at spawn.
+_SPAWN_CLEARANCE_M = 0.002
 _INHAND_SCALE_FACTOR_RANGE = (0.90, 1.20)
 
 def _inhand_asset_base(category: str) -> _Path:

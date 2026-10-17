@@ -600,6 +600,28 @@ a newly compiled model logs a warning for any free object with a point-like
 inertia or a centre of mass outside its collision box
 (`abc_sim.mass_properties`).
 
+Every reset also checks the reset pose for free objects spawned inside other
+collision geometry, which the stiff contacts would eject on the first steps
+(`abc_sim.initial_penetration`). Objects more than 5 mm deep are logged as a
+warning, once per object pair and env. The `inhand_transfer` object is placed
+with its lowest collision vertex 2 mm above the table, the chess tin is kept
+1 cm clear of the board's yawed footprint (pieces leaning into a tin wall are
+pushed out), and thrown-bottle layouts with an object inside a room wall are
+resampled. A 100-seed audit with MuJoCo 3.15 still finds overlaps that settle
+without ejecting anything in `sort_nuts_and_bolts` (bolts up to 20 mm into the
+table), `count_*_into_opaque_box` (objects up to 19 mm into the box walls,
+39/100 seeds), `sweep_away_paper_scraps_from_table` (the bin and scraps up to
+14 mm into the table) and `pouring` (beads up to 12 mm into each other), and
+one that does move an object: `build_wood_block_tower` spawns `L_block_1` 25 mm
+inside the table on every seed and it jumps ~0.4 m. These tasks are unchanged
+and will log the warning.
+
+Regression command for the spawn checks (task assets required for all but the
+first file):
+```bash
+python -m pytest -q abc_sim/initial_penetration_test.py abc_sim/spawn_overlap_test.py
+```
+
 `abc_sim/VERSION` now records simulator task/protocol version **3.2.0**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;

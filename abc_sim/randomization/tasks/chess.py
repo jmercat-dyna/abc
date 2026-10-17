@@ -49,6 +49,85 @@ _CHESS_PIECE_JOINTS = [
 ]
 
 
+# Free gap kept between the tin's and the board's collision footprints.
+_TIN_BOARD_CLEARANCE_M = 0.010
+# Reset contacts deeper than this between the tin and a piece or the board, or
+# between two knocked-over pieces, would eject them on the first step.
+_PENETRATION_TOLERANCE_M = 0.002
+# Tilted pieces in the tin can lean into a wall; each is pushed back out along
+# the contact normal by its depth plus this gap, for a few passes.
+_TIN_PIECE_PUSH_CLEARANCE_M = 0.001
+_TIN_PIECE_PUSH_PASSES = 4
+
+
+def _oriented_rects_overlap(
+    center_a: np.ndarray,
+    half_a: np.ndarray,
+    yaw_a: float,
+    center_b: np.ndarray,
+    half_b: np.ndarray,
+    yaw_b: float,
+) -> bool:
+    """Separating-axis test for two yawed rectangles in the xy plane."""
+    def axes(yaw: float) -> tuple[np.ndarray, np.ndarray]:
+        cos, sin = float(np.cos(yaw)), float(np.sin(yaw))
+        return np.array([cos, sin]), np.array([-sin, cos])
+
+    axes_a, axes_b = axes(yaw_a), axes(yaw_b)
+    delta = np.asarray(center_b, dtype=np.float64) - np.asarray(center_a, dtype=np.float64)
+    for axis in (*axes_a, *axes_b):
+        radius_a = sum(h * abs(float(a @ axis)) for h, a in zip(half_a, axes_a))
+        radius_b = sum(h * abs(float(b @ axis)) for h, b in zip(half_b, axes_b))
+        if abs(float(delta @ axis)) > radius_a + radius_b:
+            return False
+    return True
+
+
+_TIN_COLLISION_GEOMS = (
+    "tin_box_floor",
+    "tin_box_wall_y_pos",
+    "tin_box_wall_y_neg",
+    "tin_box_wall_x_pos",
+    "tin_box_wall_x_neg",
+)
+
+
+def _collision_footprint(
+    model: Any, joint_name: str, geom_names: tuple[str, ...] | None = None
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """xy collision box of a free body at ``qpos0``.
+
+    Uses ``geom_names`` if given (collision on the tin is toggled per episode,
+    so its contype cannot be trusted), else the body's colliding geoms.
+    Returns the box centre relative to the body origin, its half extents and
+    the body's yaw at ``qpos0`` (the box is axis-aligned at that yaw).
+    """
+    joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+    if joint < 0:
+        return None
+    body = int(model.jnt_bodyid[joint])
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    low, high = np.full(2, np.inf), np.full(2, -np.inf)
+    for geom in range(model.ngeom):
+        if int(model.geom_bodyid[geom]) != body:
+            continue
+        if geom_names is not None:
+            if mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom) not in geom_names:
+                continue
+        elif not (model.geom_contype[geom] or model.geom_conaffinity[geom]):
+            continue
+        rotation = np.asarray(data.geom_xmat[geom]).reshape(3, 3)
+        center = data.geom_xpos[geom] + rotation @ model.geom_aabb[geom, :3]
+        half = np.abs(rotation) @ model.geom_aabb[geom, 3:]
+        low = np.minimum(low, center[:2] - half[:2])
+        high = np.maximum(high, center[:2] + half[:2])
+    if not np.all(np.isfinite(low)):
+        return None
+    offset = (low + high) / 2 - np.asarray(data.xpos[body][:2])
+    return offset, (high - low) / 2, _yaw_from_quat(np.asarray(data.xquat[body]))
+
+
 class ChessRandomizer(SceneRandomizer):
     """Generate partial chess-board setup tasks.
 
@@ -201,9 +280,13 @@ class ChessRandomizer(SceneRandomizer):
             self._apply_states(model, data, states)
             self._set_tin_collision_enabled(model, bool(metadata.get("tin_active", False)))
             mujoco.mj_forward(model, data)
+            if scenario == "tin_setup":
+                self._push_pieces_out_of_tin_walls(model, data, states)
             if not self._object_arm_contacts_ok(model, data):
                 continue
             if scenario != "knocked_setup" and not self._contacts_ok(model, data):
+                continue
+            if scenario == "knocked_setup" and self._has_deep_piece_overlap(model, data):
                 continue
             self._remember_selection(metadata)
             return RandomizationState(
@@ -262,13 +345,7 @@ class ChessRandomizer(SceneRandomizer):
     def _set_tin_collision_enabled(self, model: Any, enabled: bool) -> None:
         contype = 1 if enabled else 0
         conaffinity = 1 if enabled else 0
-        for geom_name in (
-            "tin_box_floor",
-            "tin_box_wall_y_pos",
-            "tin_box_wall_y_neg",
-            "tin_box_wall_x_pos",
-            "tin_box_wall_x_neg",
-        ):
+        for geom_name in _TIN_COLLISION_GEOMS:
             geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
             if geom_id >= 0:
                 model.geom_contype[geom_id] = contype
@@ -532,6 +609,13 @@ class ChessRandomizer(SceneRandomizer):
             mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
             self._fixed_body_nominals = None
 
+    def _before_sampling(self, model: Any, data: Any) -> None:
+        super()._before_sampling(model, data)
+        self._board_footprint = _collision_footprint(model, "chessboard")
+        self._tin_footprint = _collision_footprint(
+            model, self._tin_joint, _TIN_COLLISION_GEOMS
+        )
+
     def _hidden_tin_state(
         self,
         nominals: dict[str, tuple[np.ndarray, np.ndarray]],
@@ -626,7 +710,9 @@ class ChessRandomizer(SceneRandomizer):
             }
             if not self._tin_overlaps_board(candidate, board_state):
                 return candidate
-        return candidate
+        # Every candidate overlaps this board pose; resample the whole setup
+        # rather than spawn the tin inside the board.
+        raise _ChessPlacementFailure()
 
     def _target_board_poses(
         self,
@@ -871,10 +957,96 @@ class ChessRandomizer(SceneRandomizer):
         board_yaw = _yaw_from_quat(np.asarray(board_state["quat"], dtype=np.float64))
         local = self._rotate_xy(tin_center - board_center, -board_yaw)
         tin_outer_half_xy = self._current_tin_outer_half_xy()
-        return (
+        if (
             abs(float(local[0])) < self._board_half + tin_outer_half_xy[0] + 0.02
             and abs(float(local[1])) < self._board_half + tin_outer_half_xy[1] + 0.02
-        )
+        ):
+            return True
+        # The test above ignores the tin's own yaw and uses nominal sizes that
+        # under-cover the compiled collision boxes, so also test the actual,
+        # yawed collision footprints.
+        board_footprint = getattr(self, "_board_footprint", None)
+        tin_footprint = getattr(self, "_tin_footprint", None)
+        if board_footprint is None or tin_footprint is None:
+            return False
+        rects = []
+        for state, (offset, half, nominal_yaw) in (
+            (board_state, board_footprint),
+            (tin_state, tin_footprint),
+        ):
+            yaw = _yaw_from_quat(np.asarray(state["quat"], dtype=np.float64))
+            center = np.asarray(state["pos"][:2], dtype=np.float64) + self._rotate_xy(
+                offset, yaw - nominal_yaw
+            )
+            rects.append((center, half + _TIN_BOARD_CLEARANCE_M / 2, yaw - nominal_yaw))
+        return _oriented_rects_overlap(*rects[0], *rects[1])
+
+    def _piece_roots(self, model: Any) -> dict[int, str]:
+        roots: dict[int, str] = {}
+        for joint_name in _CHESS_PIECE_JOINTS:
+            joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if joint >= 0:
+                roots[int(model.body_rootid[int(model.jnt_bodyid[joint])])] = joint_name
+        return roots
+
+    def _push_pieces_out_of_tin_walls(
+        self,
+        model: Any,
+        data: Any,
+        states: dict[str, dict[str, list[float]]],
+    ) -> None:
+        """Move pieces that start inside a tin wall back out along the contact normal.
+
+        Cells keep piece centres 17 mm from the walls, but a piece tilted by up
+        to 0.35 rad leans its top up to ~3 cm sideways, into the wall. Uses no
+        randomness, so placements without such contacts are unchanged.
+        """
+        tin_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, self._tin_joint)
+        if tin_joint < 0:
+            return
+        tin_root = int(model.body_rootid[int(model.jnt_bodyid[tin_joint])])
+        piece_roots = self._piece_roots(model)
+        for _pass in range(_TIN_PIECE_PUSH_PASSES):
+            pushes: dict[str, np.ndarray] = {}
+            for index in range(data.ncon):
+                contact = data.contact[index]
+                if contact.dist >= -_PENETRATION_TOLERANCE_M:
+                    continue
+                root_1 = int(model.body_rootid[int(model.geom_bodyid[contact.geom1])])
+                root_2 = int(model.body_rootid[int(model.geom_bodyid[contact.geom2])])
+                # The contact normal points from geom1 to geom2.
+                normal = np.asarray(contact.frame[:3], dtype=np.float64)
+                if root_1 == tin_root and root_2 in piece_roots:
+                    joint_name, direction = piece_roots[root_2], normal
+                elif root_2 == tin_root and root_1 in piece_roots:
+                    joint_name, direction = piece_roots[root_1], -normal
+                else:
+                    continue
+                push = direction * (-float(contact.dist) + _TIN_PIECE_PUSH_CLEARANCE_M)
+                previous = pushes.get(joint_name)
+                if previous is None or np.linalg.norm(push) > np.linalg.norm(previous):
+                    pushes[joint_name] = push
+            if not pushes:
+                return
+            for joint_name, push in pushes.items():
+                joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+                address = int(model.jnt_qposadr[joint])
+                data.qpos[address:address + 3] += push
+                states[joint_name]["pos"] = [float(v) for v in data.qpos[address:address + 3]]
+            mujoco.mj_forward(model, data)
+
+    def _has_deep_piece_overlap(self, model: Any, data: Any) -> bool:
+        """Whether two pieces start interpenetrating deeper than the tolerance."""
+        piece_roots = self._piece_roots(model)
+        for index in range(data.ncon):
+            contact = data.contact[index]
+            if contact.dist >= -_PENETRATION_TOLERANCE_M:
+                continue
+            root_1 = int(model.body_rootid[int(model.geom_bodyid[contact.geom1])])
+            root_2 = int(model.body_rootid[int(model.geom_bodyid[contact.geom2])])
+            if root_1 != root_2 and root_1 in piece_roots and root_2 in piece_roots:
+                return True
+        return False
 
     def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
         # Nominal chess squares are intentionally close, so the generic
@@ -890,6 +1062,10 @@ class ChessRandomizer(SceneRandomizer):
             jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
             if jnt_id >= 0:
                 piece_roots.add(int(model.body_rootid[int(model.jnt_bodyid[jnt_id])]))
+        tin_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, self._tin_joint)
+        tin_root = (
+            int(model.body_rootid[int(model.jnt_bodyid[tin_joint])]) if tin_joint >= 0 else -1
+        )
 
         for contact_index in range(data.ncon):
             contact = data.contact[contact_index]
@@ -898,6 +1074,14 @@ class ChessRandomizer(SceneRandomizer):
             root_1 = int(model.body_rootid[body_1])
             root_2 = int(model.body_rootid[body_2])
             if root_1 != root_2 and root_1 in piece_roots and root_2 in piece_roots:
+                return False
+            if (
+                root_1 != root_2
+                and tin_root in (root_1, root_2)
+                and contact.dist < -_PENETRATION_TOLERANCE_M
+            ):
+                # A tilted piece leaning into a tin wall, or the tin inside
+                # the board, is ejected by the contact solver.
                 return False
         return True
 
