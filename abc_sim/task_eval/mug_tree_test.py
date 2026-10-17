@@ -671,3 +671,62 @@ def test_open_handle_around_peg_without_load_still_does_not_succeed():
     assert evaluator._peg_threaded(data, 0, peg, model)
     assert not evaluator.evaluate_model_data(model, data).scalar_success()
     assert not evaluator.evaluate_qpos_batch(data.qpos[None]).scalar_success()
+
+
+def test_vanished_mug_is_dropped_from_the_success_requirement(caplog):
+    model, data, evaluator = scene(count=2)
+    second = evaluator._mug_qpos_addrs[1]
+    data.qpos[second : second + 3] = [0.5, 0.5, 0.06]  # resting on the floor
+    for _ in range(3000):
+        mujoco.mj_step(model, data)
+    result = score((model, data, evaluator))
+    assert result["mug_hanging"] == [True, False]
+    assert result["mug_vanished"] == [False, False]
+    assert result["num_required_mugs"] == 2 and not result["success"]
+
+    # Launched out of the scene, as a physics blow-up does.
+    data.qpos[second : second + 3] = [-18.0, 1.0, 35.0]
+    with caplog.at_level("WARNING", logger="abc_sim.task_eval.mug_tree"):
+        result = score((model, data, evaluator))
+        score((model, data, evaluator))
+    assert result["mug_vanished"] == [False, True]
+    assert result["num_required_mugs"] == 1
+    assert result["success"] and result["ever_success"]
+    assert result["reward"] == pytest.approx(0.5)  # hanging mugs over all mugs
+    assert caplog.text.count("left the scene") == 1  # once per mug and episode
+    batch = evaluator.evaluate_qpos_batch(data.qpos[None])
+    assert batch.metrics["mug_vanished"].tolist() == [[False, True]]
+    assert batch.scalar_success()
+
+
+@pytest.mark.parametrize(
+    "position",
+    [[0.6, 0.1, -1.0], [-18.0, 1.0, 35.0], [np.nan, 0.0, 0.8]],
+    ids=["under_floor", "far_away", "non_finite"],
+)
+def test_mug_counts_as_vanished_only_when_out_of_the_scene(position):
+    model, data, evaluator = scene()
+    mujoco.mj_forward(model, data)
+    assert not evaluator._mugs_vanished(data).any()
+    data.xpos[evaluator._mug_bodies[0]] = position
+    assert evaluator._mugs_vanished(data).tolist() == [True]
+
+
+@pytest.mark.parametrize(
+    ("hanging", "vanished", "success"),
+    [
+        ([True, True], [False, False], True),
+        ([True, False], [False, False], False),
+        ([True, False], [False, True], True),
+        ([False, False], [False, True], False),
+        ([False, False], [True, True], False),  # losing every mug never succeeds
+    ],
+)
+def test_success_is_judged_on_the_mugs_left_in_the_scene(hanging, vanished, success):
+    _, _, evaluator = scene(count=2)
+    result = evaluator._result_from_samples(
+        [{"mug_hanging": np.array(hanging), "mug_vanished": np.array(vanished)}]
+    )
+    assert result.success.tolist() == [success]
+    assert result.metrics["ever_success"].tolist() == [success]
+    assert result.reward.tolist() == [sum(hanging) / 2]

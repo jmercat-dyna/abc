@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 from typing import Any
 
@@ -11,6 +12,8 @@ import numpy as np
 
 from abc_sim.task_eval.base import TaskEvalResult
 from abc_sim.task_specs import SimTaskSpec
+
+logger = logging.getLogger(__name__)
 
 
 class MugOnRackEvaluator:
@@ -22,6 +25,13 @@ class MugOnRackEvaluator:
     shallow rack bracing and tangency between independently hanging mugs are
     permitted alongside genuine peg support. Live and
     qpos-batch paths share the same contact/geometry checks.
+
+    A mug that has left the scene (non-finite pose, below ``vanished_below_z_m``
+    or farther than ``vanished_distance_m`` from the rack) can never hang again,
+    so it is dropped from the success requirement with a warning; success is
+    judged on the remaining mugs and is never granted once every mug is gone.
+    A mug knocked onto the table or floor stays required. ``reward`` is
+    unchanged: hanging mugs over all mugs.
     """
 
     def __init__(
@@ -38,6 +48,8 @@ class MugOnRackEvaluator:
         bottom_slice_fraction: float = 0.1,
         geometry_tolerance_m: float = 1e-5,
         max_penetration_m: float = 0.002,
+        vanished_below_z_m: float = -0.25,
+        vanished_distance_m: float = 5.0,
     ) -> None:
         self.spec = spec
         self._tree_body_name = tree_body_name
@@ -49,6 +61,10 @@ class MugOnRackEvaluator:
         self.bottom_slice_fraction = float(bottom_slice_fraction)
         self.geometry_tolerance_m = float(geometry_tolerance_m)
         self.max_penetration_m = float(max_penetration_m)
+        # The floor is z = 0 and the scene spans ~1.5 m: nothing a policy does
+        # puts a mug under the floor or metres from the rack.
+        self.vanished_below_z_m = float(vanished_below_z_m)
+        self.vanished_distance_m = float(vanished_distance_m)
         if (
             not np.isfinite(self.support_weight_fraction)
             or not 0 < self.support_weight_fraction <= 1
@@ -63,6 +79,10 @@ class MugOnRackEvaluator:
             raise ValueError("geometry_tolerance_m must be positive and finite")
         if not np.isfinite(self.max_penetration_m) or self.max_penetration_m <= 0:
             raise ValueError("max_penetration_m must be positive and finite")
+        if not np.isfinite(self.vanished_below_z_m):
+            raise ValueError("vanished_below_z_m must be finite")
+        if not np.isfinite(self.vanished_distance_m) or self.vanished_distance_m <= 0:
+            raise ValueError("vanished_distance_m must be positive and finite")
         self._bind_model(model)
         self.reset(nworld=1)
 
@@ -171,6 +191,9 @@ class MugOnRackEvaluator:
         self._nworld = int(nworld)
         self._max_hanging = np.zeros((self._nworld,), dtype=np.int32)
         self._ever_success = np.zeros((self._nworld,), dtype=bool)
+        self._vanished_warned = np.zeros(
+            (self._nworld, len(self.mug_names)), dtype=bool
+        )
 
     def configure_from_randomization(
         self,
@@ -488,6 +511,21 @@ class MugOnRackEvaluator:
                 return True
         return False
 
+    def _mugs_vanished(self, data: mujoco.MjData) -> np.ndarray:
+        """Which mugs have left the scene for good (see the class docstring)."""
+        positions = np.asarray(
+            [data.xpos[body] for body in self._mug_bodies], dtype=np.float64
+        ).reshape(-1, 3)
+        finite = np.all(np.isfinite(positions), axis=1)
+        safe = np.where(finite[:, None], positions, 0.0)
+        rack = np.asarray(data.xpos[self._tree_body_id], dtype=np.float64)
+        distance = np.linalg.norm(safe - rack, axis=1)
+        return (
+            ~finite
+            | (safe[:, 2] < self.vanished_below_z_m)
+            | (distance > self.vanished_distance_m)
+        )
+
     def _sample_support(
         self, data: mujoco.MjData, model: mujoco.MjModel
     ) -> dict[str, np.ndarray]:
@@ -569,6 +607,7 @@ class MugOnRackEvaluator:
             "mug_rack_brace_contact": rack_brace_contact,
             "mug_rack_brace_force_n": rack_brace_force,
             "mug_hanging": supported & ~other_contact,
+            "mug_vanished": self._mugs_vanished(data),
         }
 
     def evaluate_model_data(
@@ -613,11 +652,14 @@ class MugOnRackEvaluator:
             key: np.stack([row[key] for row in samples]) for key in samples[0]
         }
         hanging = metrics["mug_hanging"]
+        vanished = metrics["mug_vanished"]
         num_hanging = hanging.sum(axis=1).astype(np.int32)
         total = len(self.mug_names)
         self._max_hanging = np.maximum(self._max_hanging, num_hanging)
-        success = num_hanging == total
+        present = ~vanished
+        success = present.any(axis=1) & np.all(hanging | vanished, axis=1)
         self._ever_success |= success
+        self._warn_newly_vanished(vanished)
         return TaskEvalResult(
             reward=num_hanging.astype(np.float32) / float(total),
             success=success,
@@ -625,6 +667,7 @@ class MugOnRackEvaluator:
                 **metrics,
                 "num_mugs_hanging": num_hanging,
                 "num_active_mugs": np.full_like(num_hanging, total),
+                "num_required_mugs": present.sum(axis=1).astype(np.int32),
                 "max_mugs_hanging_so_far": self._max_hanging.copy(),
                 "mugs_hanging": [
                     [name for name, ok in zip(self.mug_names, world) if ok]
@@ -636,3 +679,16 @@ class MugOnRackEvaluator:
                 "support_weight_fraction": self.support_weight_fraction,
             },
         )
+
+    def _warn_newly_vanished(self, vanished: np.ndarray) -> None:
+        if self._vanished_warned.shape != vanished.shape:
+            self._vanished_warned = np.zeros(vanished.shape, dtype=bool)
+        for world, mug in zip(*np.nonzero(vanished & ~self._vanished_warned)):
+            logger.warning(
+                "Mug %r left the scene (world %d); hang_mug success is now judged "
+                "on the %d remaining mug(s)",
+                self.mug_names[mug],
+                world,
+                int((~vanished[world]).sum()),
+            )
+        self._vanished_warned |= vanished

@@ -7,6 +7,30 @@ for fixes that preserve protocol semantics. Record this value as `sim_version`
 in eval artifacts. Historical unversioned runs must not be mixed with a
 versioned protocol.
 
+## 3.2.0
+
+- Spread each mug's 0.05 kg over all of its visual meshes at one density.
+  The mass used to sit on the first visual mesh only. For `mug_1` that mesh
+  is a small fragment: its rotational inertia was 27-254x too small and its
+  centre of mass 5.1 cm off the mug, so the stiff mug contact launched it out
+  of the scene at the first table contact (seed 20260514 of
+  `hang_mug_on_mug_rack`: 35 m away after 2 s; now it settles within 2 cm).
+  The other two-mesh variants (`mug_0`, `mug_3`, `mug_14`, `mug_15`,
+  `mug_17`, `mug_18`) gain up to 1.5x inertia and move their centre of mass
+  by 0.3-0.6 cm. Single-mesh variants are unchanged. This applies to both mug
+  tasks.
+- `hang_mug_on_mug_rack`: a mug that has left the scene (non-finite pose,
+  below z = -0.25 m or more than 5 m from the rack) is dropped from the
+  success requirement with a warning, and success is judged on the remaining
+  mugs. Losing every mug is never a success. A mug on the table or floor stays
+  required. The per-mug hanging test and `reward` (hanging over all mugs) are
+  unchanged. New metrics: `mug_vanished`, `num_required_mugs`. This is a
+  narrow task change alongside a bug fix, so the minor version is bumped.
+- On reset, `MuJoCoYAMEnv` checks each newly compiled model once and logs a
+  warning for every free object with a point-like inertia or a centre of mass
+  outside its collision box (`abc_sim.mass_properties`). No bundled task
+  triggers it.
+
 ## 3.1.2
 
 - Preserve the merged MuJoCo 3.15.0 / MuJoCo Warp 3.15.0 / Warp 1.18.0 runtime,

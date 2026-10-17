@@ -584,11 +584,23 @@ The six peg collision geoms are named in the bundled scene so mesh scaling
 preserves their identity. Vessel/handle geometry is derived again for each
 compiled mug variant/scale. Configurable evaluator options are
 `support_weight_fraction` (default 0.25), `bottom_slice_fraction` (0.1),
-`geometry_tolerance_m` (0.00001), and `max_penetration_m` (0.002). The geometry
+`geometry_tolerance_m` (0.00001), `max_penetration_m` (0.002),
+`vanished_below_z_m` (-0.25) and `vanished_distance_m` (5.0). A mug below that
+height or farther than that from the rack, or with a non-finite pose, has left
+the scene: it is dropped from the success requirement (logged once per mug and
+episode, reported as `mug_vanished`/`num_required_mugs`), and success is judged
+on the remaining mugs. Losing every mug is never a success. The geometry
 assumes the shipped assets' handles protrude along local -y and are thin in x;
 a different asset convention needs an updated geometry contract.
 
-`abc_sim/VERSION` now records simulator task/protocol version **3.1.2**,
+Every mug variant weighs 0.05 kg, spread at one density over all of its visual
+meshes (collision meshes carry no mass). Some variants split the mug into
+several visual meshes; `mug_1`'s first one is a small fragment. Every reset of
+a newly compiled model logs a warning for any free object with a point-like
+inertia or a centre of mass outside its collision box
+(`abc_sim.mass_properties`).
+
+`abc_sim/VERSION` now records simulator task/protocol version **3.2.0**,
 independently of the `abc-minimal` policy package version. Read it with
 `abc_sim.version.get_sim_version()`. Native summaries write `sim_version`;
 compare runs within the same version. [CHANGELOG.md](CHANGELOG.md) records
@@ -596,7 +608,8 @@ changes, including the retrospective 1.0.0 baseline before mug scoring changed.
 
 Regression command:
 ```bash
-python -m pytest -q abc_sim/task_eval/mug_tree_test.py abc_sim/version_test.py
+python -m pytest -q abc_sim/task_eval/mug_tree_test.py abc_sim/version_test.py \
+    abc_sim/randomization/assets/mugs_test.py abc_sim/mass_properties_test.py
 ```
 The mug suite runs without downloaded assets; additional production-mesh
 positives run when the full task/YAM assets are installed. A CPU audit found

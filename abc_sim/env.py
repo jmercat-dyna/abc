@@ -14,6 +14,7 @@ import mujoco
 import numpy as np
 
 from abc_sim.config import RobotSystemConfig
+from abc_sim.mass_properties import warn_on_free_object_mass_problems
 from abc_sim.rendering.live import LiveRenderBackend, create_live_camera_provider
 from abc_sim.task_eval import TaskEvalResult, make_task_evaluator
 from abc_sim.task_registry import DEFAULT_SCENE_XML, SCENE_XMLS, get_task_randomizer, resolve_task
@@ -334,6 +335,11 @@ class MuJoCoYAMEnv(gym.Env):
                 prompt = getattr(self._last_randomization, "metadata", {}).get("prompt")
                 if prompt is not None:
                     self.prompt = str(prompt)
+
+        # Mass properties are fixed per compiled model; check each model once.
+        if getattr(self, "_mass_checked_model", None) is not self.model:
+            warn_on_free_object_mass_problems(self.model, self.data)
+            self._mass_checked_model = self.model
 
         if self._task_runtime is not None:
             self._task_runtime.after_reset(

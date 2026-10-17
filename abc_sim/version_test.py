@@ -11,7 +11,7 @@ from abc_sim.version import get_sim_version
 
 def test_simulator_version_is_valid_semver():
     assert re.fullmatch(r"\d+\.\d+\.\d+", get_sim_version())
-    assert get_sim_version() == "3.1.2"
+    assert get_sim_version() == "3.2.0"
 
 
 def test_native_summary_records_simulator_version(tmp_path):

@@ -28,6 +28,8 @@ from .xml_common import (
 )
 
 _MUG_DEFAULT_VARIANT = "mug_0"
+# Every mug variant weighs the same; the visual meshes carry it (see _mug_assign_visual_mass).
+_MUG_MASS_KG = 0.05
 _MUG_BASE_SCENE_XMLS: dict[str, _Path] = {
     "mug_flip": _MODELS_DIR / "yam_mug_flip_scene.xml",
     "mug_tree": _MODELS_DIR / "yam_mug_tree_scene.xml",
@@ -94,8 +96,12 @@ def _mug_instance_prefix(variant_name: str, instance_index: int) -> str:
     return f"mug_{instance_index}_{variant_name}"
 
 
+def _mug_is_visual_geom(geom: _ET.Element) -> bool:
+    return geom.get("contype") == "0" and geom.get("conaffinity") == "0"
+
+
 def _mug_prepare_imported_geoms(body: _ET.Element) -> None:
-    mass_assigned = False
+    """Classify imported geoms; mass is assigned later by ``_mug_assign_visual_mass``."""
     for parent in body.iter():
         for child in list(parent):
             if child.tag != "geom":
@@ -112,18 +118,14 @@ def _mug_prepare_imported_geoms(body: _ET.Element) -> None:
                 parent.remove(child)
                 continue
 
-            is_visual = child.get("contype") == "0" and child.get("conaffinity") == "0"
+            is_visual = _mug_is_visual_geom(child)
             child.attrib.pop("class", None)
             if is_visual:
                 child.set("group", "2")
                 child.set("contype", "0")
                 child.set("conaffinity", "0")
                 child.set("density", "0")
-                if not mass_assigned:
-                    child.set("mass", "0.05")
-                    mass_assigned = True
-                else:
-                    child.attrib.pop("mass", None)
+                child.attrib.pop("mass", None)
                 continue
 
             child.set("group", "3")
@@ -137,7 +139,89 @@ def _mug_prepare_imported_geoms(body: _ET.Element) -> None:
             child.attrib.pop("mass", None)
 
 
+def _mug_visual_mesh_volume(assets: list[_ET.Element], body: _ET.Element) -> float:
+    """Total volume (m^3) of ``body``'s visual meshes, as MuJoCo's compiler measures it.
+
+    Compiles a throwaway model holding only those meshes at unit density, so the
+    compiled mass is the volume. Mesh ``file`` attributes must be absolute.
+    """
+    probe = copy.deepcopy(body)
+    for parent in probe.iter():
+        for child in list(parent):
+            if child.tag == "geom" and not (
+                _mug_is_visual_geom(child) and child.get("mesh")
+            ):
+                parent.remove(child)
+    for geom in probe.iter("geom"):
+        geom.attrib.pop("mass", None)
+        geom.attrib.pop("material", None)
+        geom.set("density", "1")
+    root = _ET.Element("mujoco")
+    asset = _ET.SubElement(root, "asset")
+    asset.extend(copy.deepcopy(element) for element in assets if element.tag == "mesh")
+    probe_root = _ET.SubElement(
+        _ET.SubElement(root, "worldbody"), "body", name="volume_probe"
+    )
+    probe_root.append(probe)
+    model = mujoco.MjModel.from_xml_string(_ET.tostring(root, encoding="unicode"))
+    return float(model.body_subtreemass[1])
+
+
+@_lru_cache(maxsize=256)
+def _mug_cached_visual_volume(
+    task_name: str, variant_name: str, scale_factor: float
+) -> float:
+    assets, body = _mug_build_massless_block(
+        task_name=task_name,
+        variant_name=variant_name,
+        instance_index=0,
+        scale_factor=scale_factor,
+        joint_name="volume_probe_jnt",
+    )
+    return _mug_visual_mesh_volume(assets, body)
+
+
+def _mug_assign_visual_mass(body: _ET.Element, total_mass: float, volume: float) -> None:
+    """Spread ``total_mass`` over all visual meshes of ``body`` at one density.
+
+    Collision meshes carry no mass, so the visual meshes define the mug's mass
+    properties. Several variants split the mug into multiple visual meshes (e.g.
+    ``mug_1``'s first mesh is a small fragment); a uniform density over all of
+    them keeps the centre of mass and inertia on the whole mug.
+    """
+    if not np.isfinite(volume) or volume <= 0:
+        raise ValueError(
+            f"visual meshes of mug body {body.get('name')!r} have no volume ({volume})"
+        )
+    density = total_mass / volume
+    for geom in body.iter("geom"):
+        if _mug_is_visual_geom(geom) and geom.get("mesh"):
+            geom.attrib.pop("mass", None)
+            geom.set("density", repr(density))
+
+
 def _mug_build_object_block(
+    *,
+    task_name: str,
+    variant_name: str,
+    instance_index: int,
+    scale_factor: float,
+    joint_name: str,
+) -> tuple[list[_ET.Element], _ET.Element]:
+    variant_name = _mug_canonical_variant_name(variant_name)
+    assets, body = _mug_build_massless_block(
+        task_name=task_name,
+        variant_name=variant_name,
+        instance_index=instance_index,
+        scale_factor=scale_factor,
+        joint_name=joint_name,
+    )
+    volume = _mug_cached_visual_volume(task_name, variant_name, float(scale_factor))
+    _mug_assign_visual_mass(body, _MUG_MASS_KG, volume)
+    return assets, body
+
+
+def _mug_build_massless_block(
     *,
     task_name: str,
     variant_name: str,
