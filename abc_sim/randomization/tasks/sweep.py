@@ -13,6 +13,7 @@ from ..core import (
     _body_subtree_xy_keepout_discs,
     _quat_mul,
     _sample_orientation_delta,
+    _body_collision_bottom_z,
     _yaw_from_quat,
 )
 from ..requests import SweepResetRequest, _SweepPlacementFailure
@@ -36,6 +37,10 @@ class SweepRandomizer(SceneRandomizer):
     _tool_tool_clearance_m = 0.08
     _dustpan_keepout_margin_m = 0.006
     _brush_keepout_margin_m = 0.01
+    # Top of table_plane in yam_sweep_scene.xml, and the gap left under objects
+    # that _rest_on_table lifts out of it.
+    _table_top_z = 0.75
+    _spawn_clearance_m = 0.002
 
     def __init__(self) -> None:
         super().__init__()
@@ -82,6 +87,7 @@ class SweepRandomizer(SceneRandomizer):
                 continue
             self._apply_states(model, data, states)
             mujoco.mj_forward(model, data)
+            self._rest_on_table(model, data, states)
             if not self._contacts_ok(model, data):
                 continue
             return self._finalize_randomization_state(
@@ -124,6 +130,43 @@ class SweepRandomizer(SceneRandomizer):
             metadata=dict(state.metadata),
         )
         super().apply(model, data, full_state)
+        # Lift states recorded before the spawn-height fix out of the table;
+        # a no-op for new states. apply() may have reloaded the model.
+        if self._env_ref is not None:
+            model, data = self._env_ref.model, self._env_ref.data
+        self._rest_on_table(model, data, None)
+
+    def _rest_on_table(
+        self,
+        model: Any,
+        data: Any,
+        states: dict[str, dict[str, list[float]]] | None,
+    ) -> None:
+        """Lift the bin and the active scraps whose collision geometry is inside the table.
+
+        Scraps get a random roll/pitch and the bin a random scale around a
+        fixed origin height, which left every scrap 6-13 mm and most bins
+        5-7 mm inside the table. Each such body is raised until its lowest
+        collision point is ``_spawn_clearance_m`` above the table; bodies
+        already clear are untouched. ``states`` (if given) is updated to match.
+        """
+        floor = self._table_top_z + self._spawn_clearance_m
+        mujoco.mj_kinematics(model, data)
+        moved = False
+        for joint_name in ("bin_joint", *self._trash_joints):
+            joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if joint < 0:
+                continue
+            bottom = _body_collision_bottom_z(model, data, int(model.jnt_bodyid[joint]))
+            if not np.isfinite(bottom) or bottom >= floor:
+                continue
+            address = int(model.jnt_qposadr[joint])
+            data.qpos[address + 2] += floor - bottom
+            if states is not None and joint_name in states:
+                states[joint_name]["pos"][2] = float(data.qpos[address + 2])
+            moved = True
+        if moved:
+            mujoco.mj_forward(model, data)
 
     def _resolve_trash_count(
         self,

@@ -322,6 +322,27 @@ def _body_subtree_xy_keepout_discs(
     return discs
 
 
+def _body_collision_bottom_z(model: Any, data: Any, body: int) -> float:
+    """Lowest world z of ``body``'s collision geoms at the current kinematics."""
+    bottom = np.inf
+    for geom in range(model.ngeom):
+        if int(model.geom_bodyid[geom]) != body:
+            continue
+        if not (model.geom_contype[geom] or model.geom_conaffinity[geom]):
+            continue
+        rotation = np.asarray(data.geom_xmat[geom]).reshape(3, 3)
+        mesh = int(model.geom_dataid[geom])
+        if model.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH and mesh >= 0:
+            start = int(model.mesh_vertadr[mesh])
+            vertices = model.mesh_vert[start:start + int(model.mesh_vertnum[mesh])]
+            low = float((vertices @ rotation[2]).min()) + float(data.geom_xpos[geom][2])
+        else:
+            center = data.geom_xpos[geom] + rotation @ model.geom_aabb[geom, :3]
+            low = float(center[2] - np.abs(rotation[2]) @ model.geom_aabb[geom, 3:])
+        bottom = min(bottom, low)
+    return float(bottom)
+
+
 class SceneRandomizer:
     """Base class for scene object randomization with two-stage rejection sampling.
 

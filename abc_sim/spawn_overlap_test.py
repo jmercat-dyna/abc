@@ -133,3 +133,54 @@ def test_reset_warns_about_a_spawn_overlap(inhand_env, caplog):
         found = warn_on_free_object_penetrations(inhand_env.model, inhand_env.data)
     assert found and found[0].other_geom == "table_plane"
     assert "Free object spawned inside other geometry" in caplog.text
+
+
+def test_block_tower_l_block_spawns_on_the_table():
+    # L_block_1's origin is 45 mm above its collision bottom; at the shared
+    # 0.77 m spawn height it started 25 mm inside the table on every seed.
+    env = _make_env("build_wood_block_tower")
+    env.reset(seed=20260511)
+    _assert_clean_spawn(env)
+
+
+@pytest.mark.parametrize("seed", [20260511, 20260512, 20260513])
+def test_upright_bolts_spawn_on_the_table(seed):
+    # Generated bolt slots used the nut height, 16-20 mm too low for a bolt
+    # standing on its head.
+    env = _make_env("sort_nuts_and_bolts")
+    env.reset(seed=seed)
+    _assert_clean_spawn(env)
+
+
+@pytest.fixture(scope="module")
+def sweep_env():
+    return _make_env("sweep_away_paper_scraps_from_table")
+
+
+@pytest.mark.parametrize("seed", [20260511, 20260512, 20260513])
+def test_sweep_scraps_and_bin_spawn_on_the_table(sweep_env, seed):
+    # Randomly tumbled scraps (and scaled bins) kept a fixed origin height and
+    # started up to 13 mm inside the table.
+    sweep_env.reset(seed=seed)
+    _assert_clean_spawn(sweep_env)
+    states = sweep_env._last_randomization.object_states
+    for joint_name in ("bin_joint", *sweep_env._last_randomization.metadata["trash_joints"]):
+        joint = mujoco.mj_name2id(sweep_env.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        address = sweep_env.model.jnt_qposadr[joint]
+        np.testing.assert_allclose(sweep_env.data.qpos[address : address + 3], states[joint_name]["pos"])
+
+
+def test_sweep_apply_lifts_a_legacy_state_out_of_the_table(sweep_env):
+    sweep_env.reset(seed=20260512)
+    state = sweep_env._last_randomization
+    legacy = RandomizationState(
+        seed=state.seed,
+        object_states={name: {"pos": list(pose["pos"]), "quat": list(pose["quat"])}
+                       for name, pose in state.object_states.items()},
+        scale_states=dict(state.scale_states),
+        metadata=dict(state.metadata),
+    )
+    for joint_name in state.metadata["trash_joints"]:
+        legacy.object_states[joint_name]["pos"][2] -= 0.012
+    sweep_env._task_randomizer.apply(sweep_env.model, sweep_env.data, legacy)
+    _assert_clean_spawn(sweep_env)

@@ -56,6 +56,28 @@ versioned protocol.
     so a lying bottle near the back or a side edge had its cap or neck 1-15 mm
     inside the room wall (13/100 seeds; 4 ejected). Placements whose objects
     start more than 1 mm inside static scene geometry are now resampled.
+  - `build_wood_block_tower` (one fixed layout, no randomizer): every block
+    spawned with its origin at z = 0.77, but `L_block_1`'s origin is 45 mm
+    above its collision bottom, so it started 25 mm inside the table on every
+    seed and jumped ~0.4 m. It now spawns at z = 0.797 (body pos and `home`
+    keyframe), 2 mm above the table like the other blocks (1.7-2.5 mm). The
+    task has no evaluator, so there is no scoring to change.
+  - `sort_nuts_and_bolts`: generated bolt slots stand bolts upright on their
+    hex head but used the nut slot height (z = 0.75576), so every bolt
+    started 16-20 mm inside the table and popped up at ~0.5 m/s. Bolt slots
+    now use z = 0.7734, the bolt's own resting height (head flush with the
+    table, as for nuts); bolts start where they used to settle. Nut and lego
+    slots are unchanged. Seeds 20260558 and 20260574 get new horizontal
+    layouts (the raised bolts change which candidates the contact check
+    rejects); the other 98/100 only change bolt heights.
+  - `sweep_away_paper_scraps_from_table`: scraps get a random roll/pitch and
+    the bin a random scale around fixed origin heights, which left every scrap
+    6-13 mm and most bins 5-7 mm inside the table. Any bin or active scrap
+    whose collision geometry is inside the table is now raised until its
+    lowest collision point is 2 mm above it, before the contact check, on
+    reset and on `apply()` replay; the recorded `pos` holds that height. The
+    brush and dustpan are untouched. Horizontal layouts are unchanged on all
+    100 audited seeds.
 - Every reset checks the free objects' reset pose and logs a warning for any
   object more than 5 mm inside another collision geom
   (`abc_sim.initial_penetration`), once per object pair and env. Several

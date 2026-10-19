@@ -607,14 +607,16 @@ warning, once per object pair and env. The `inhand_transfer` object is placed
 with its lowest collision vertex 2 mm above the table, the chess tin is kept
 1 cm clear of the board's yawed footprint (pieces leaning into a tin wall are
 pushed out), and thrown-bottle layouts with an object inside a room wall are
-resampled. A 100-seed audit with MuJoCo 3.15 still finds overlaps that settle
-without ejecting anything in `sort_nuts_and_bolts` (bolts up to 20 mm into the
-table), `count_*_into_opaque_box` (objects up to 19 mm into the box walls,
-39/100 seeds), `sweep_away_paper_scraps_from_table` (the bin and scraps up to
-14 mm into the table) and `pouring` (beads up to 12 mm into each other), and
-one that does move an object: `build_wood_block_tower` spawns `L_block_1` 25 mm
-inside the table on every seed and it jumps ~0.4 m. These tasks are unchanged
-and will log the warning.
+resampled. Table heights are derived from the collision geometry where a fixed
+origin height did not fit the object: `build_wood_block_tower`'s `L_block_1`
+spawns 2 mm above the table, upright bolts in `sort_nuts_and_bolts` rest on
+their head, and sweep scraps and bins inside the table are lifted to 2 mm
+above it (the shared helper is
+`abc_sim.randomization.core._body_collision_bottom_z`). A 100-seed audit with
+MuJoCo 3.15 still finds overlaps that settle without ejecting anything in
+`count_*_into_opaque_box` (objects up to 19 mm into the box walls, a
+horizontal placement issue) and `pouring` (beads up to 12 mm into each other in
+the nominal bead pile). These tasks are unchanged and will log the warning.
 
 Regression command for the spawn checks (task assets required for all but the
 first file):

@@ -205,6 +205,12 @@ _BIN_COLLISION_STYLE_MESHES = {
 }
 _BIN_VISUAL_STYLES = tuple(_BIN_VISUAL_STYLE_MESHES)
 _NUT_BOLT_BODY_RE = re.compile(r"^(nut|bolt)_(\d+)$")
+# Generated nut/bolt slots stand upright with their collision bottom on the
+# table (z = 0.75): a nut's boxes reach 5.76 mm below its origin, a bolt's
+# hex-head boxes 23.4 mm (yam_nuts_bolts_sorting_scene.xml). Bolts used the nut
+# height and started 16-20 mm inside the table.
+_NUT_SLOT_Z = 0.75576
+_BOLT_SLOT_Z = 0.7734
 _LEGO_BODY_RE = re.compile(r"^(red|yellow|blue)_lego_(\d+)$")
 def _find_xml_body(root: _ET.Element, body_name: str) -> _ET.Element:
     for body in root.iter("body"):
@@ -239,8 +245,9 @@ def _sorting_candidate_generated_pose(body_name: str) -> tuple[list[float], list
         col = slot_index % 5
         row = slot_index // 5
         yaw = 0.35 * slot_index
+        slot_z = _NUT_SLOT_Z if part_type == "nut" else _BOLT_SLOT_Z
         return (
-            [0.360 + 0.045 * col, -0.365 + 0.105 * row, 0.75576],
+            [0.360 + 0.045 * col, -0.365 + 0.105 * row, slot_z],
             [float(np.cos(yaw * 0.5)), 0.0, 0.0, float(np.sin(yaw * 0.5))],
         )
 
