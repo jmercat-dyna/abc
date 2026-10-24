@@ -1,0 +1,41 @@
+{
+  "format": "abc_sim_asset_fixes/v1",
+  "root": "abc_sim/models/assets",
+  "fixes": [
+    {
+      "path": "task_conveyor_pick/objects/tomato/tomato_2/model.xml",
+      "package": "task_conveyor_pick",
+      "original_sha256": "53ca3cdb24d0b7f845f77b51c640994f78739d966e2440577d67cf290e4ce40b",
+      "fixed_sha256": "3a9e19d74cb2b0574a2cff9b99f1fc3c11684e73160a22831890c86d7ddd542c",
+      "reason": "Drop tomato_2's black inverted-hull outline shell (mesh, material.121, geom)."
+    },
+    {
+      "path": "task_grab_clutter/objects/tomato/tomato_2/model.xml",
+      "package": "task_grab_clutter",
+      "original_sha256": "7c085251d9c2b7e8d88a04d0fbc1c0fbe0dd968b438c9295ffc5697749aeba61",
+      "fixed_sha256": "20633340b7c700e4da8f0d4f442a9628c4eabbbdc7401b48cfca8575a2ac5360",
+      "reason": "Drop tomato_2's black inverted-hull outline shell (mesh, material.121, geom)."
+    },
+    {
+      "path": "task_multi_drawer_search/objects/calculator/desk_calculator/visual/model.obj",
+      "package": "task_multi_drawer_search",
+      "original_sha256": "7559e9daa21034f85af6c4cd7f096224a0e8b3f545757515366871fcea8eefce",
+      "fixed_sha256": "5b71d5a89eee47f9501231a9d37d5314b4fb1b2f8a9481f9957ac99e7aac9d8f",
+      "reason": "Re-wind the inside-out desk_calculator visual mesh outward and negate its normals."
+    },
+    {
+      "path": "task_multi_drawer_search/objects/eraser/worn_eraser/visual/model.obj",
+      "package": "task_multi_drawer_search",
+      "original_sha256": "c5fa0e0c96ce854a146a5cd5624408c79c961e4f38ff6310ca3108e27ad2ff1e",
+      "fixed_sha256": "9d66a2449729be6a2dadf90fd946b2874a47374931e9c750bbff8b52e87a8cba",
+      "reason": "Re-wind the inside-out worn_eraser visual mesh outward and negate its normals."
+    },
+    {
+      "path": "task_put_relative/objects/tomato/tomato_2/model.xml",
+      "package": "task_put_relative",
+      "original_sha256": "7c085251d9c2b7e8d88a04d0fbc1c0fbe0dd968b438c9295ffc5697749aeba61",
+      "fixed_sha256": "20633340b7c700e4da8f0d4f442a9628c4eabbbdc7401b48cfca8575a2ac5360",
+      "reason": "Drop tomato_2's black inverted-hull outline shell (mesh, material.121, geom)."
+    }
+  ]
+}

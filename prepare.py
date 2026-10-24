@@ -7,6 +7,7 @@
 import hashlib
 import http.client
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -99,6 +100,10 @@ SIM_MODELS_DIR = REPO_ROOT / "abc_sim" / "models"
 # One marker dir for every package, keyed by package name. It lives under assets/ because
 # that path is already gitignored.
 SIM_MARKER_DIR = SIM_MODELS_DIR / "assets" / ".abc_sim_asset_packages"
+# Released package files that are wrong as published, replaced by git-tracked fixed copies after
+# unpacking (see abc_sim/models/asset_fixes/README.md and scripts/build_asset_fixes.py).
+SIM_ASSET_FIXES_DIR = SIM_MODELS_DIR / "asset_fixes"
+SIM_ASSET_FIXES_FORMAT = "abc_sim_asset_fixes/v1"
 
 # Every scene loads the YAM arm meshes; everything else is per-task. Scene names are the
 # `env_task` values from abc_sim/task_specs.py; user-facing task names resolve onto them.
@@ -296,6 +301,13 @@ class PrepareConfig:
         bool,
         tyro.conf.arg(help="List the asset packages in the manifest and exit."),
     ] = False
+    sim_fix_assets: Annotated[
+        Path | None,
+        tyro.conf.arg(
+            help="Apply abc_sim/models/asset_fixes to an already unpacked asset tree "
+            "(an assets/ directory installed elsewhere, e.g. a shared copy) and exit."
+        ),
+    ] = None
     sim_data: Annotated[
         tuple[str, ...],
         tyro.conf.arg(
@@ -844,6 +856,45 @@ def load_sim_manifest():
     return {pkg["name"]: pkg for pkg in manifest["packages"]}
 
 
+def load_asset_fixes():
+    """The fixed-file overlay: [{path, package, original_sha256, fixed_sha256, reason}, ...]."""
+    manifest = json.loads((SIM_ASSET_FIXES_DIR / "fixes.json").read_text())
+    if manifest.get("format") != SIM_ASSET_FIXES_FORMAT:
+        raise RuntimeError(f"unexpected asset fixes format: {manifest.get('format')!r}")
+    return manifest["fixes"]
+
+
+def apply_asset_fixes(assets_root, packages=None):
+    """Overlay the fixed files on an unpacked asset tree; returns the paths replaced.
+
+    Idempotent. Files of packages that are not unpacked under ``assets_root`` are skipped. A file
+    that is neither the released original nor the fix (a re-published or locally edited package)
+    raises instead of being overwritten.
+    """
+    replaced = []
+    for fix in load_asset_fixes():
+        if packages is not None and fix["package"] not in packages:
+            continue
+        target = Path(assets_root) / fix["path"]
+        if not target.exists():
+            continue
+        current = sha256_file(target)
+        if current == fix["fixed_sha256"]:
+            continue
+        if current != fix["original_sha256"]:
+            raise RuntimeError(
+                f"{target}: sha256 {current} is neither the released original nor the fix; "
+                "re-run scripts/build_asset_fixes.py against the new package"
+            )
+        source = SIM_ASSET_FIXES_DIR / "files" / fix["path"]
+        verify_sha256(source, fix["fixed_sha256"], f"asset fix {fix['path']}")
+        temporary = target.with_name(f".{target.name}.fixing")
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, target)
+        replaced.append(fix["path"])
+    return replaced
+
+
 def sim_installed(pkg):
     """True when the marker matches the manifest sha256 and the unpacked dirs are still there."""
     marker = SIM_MARKER_DIR / f"{pkg['name']}.sha256"
@@ -877,6 +928,8 @@ def install_sim_package(pkg, source, work_dir):
     """Fetch, verify and unpack one package, then mark it installed. Raises on any failure."""
     archive = sim_archive(pkg, source, work_dir)
     extract_archive(archive, REPO_ROOT / pkg["extract_dir"])
+    for path in apply_asset_fixes(SIM_MODELS_DIR / "assets", {pkg["name"]}):
+        print(f"[fix] {path}")
     marker = SIM_MARKER_DIR / f"{pkg['name']}.sha256"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(pkg["sha256"] + "\n")
@@ -1357,6 +1410,8 @@ def prepare_sim(config: PrepareConfig):
         for pkg in order:
             name = pkg["name"]
             if sim_installed(pkg) and not config.sim_force:
+                for path in apply_asset_fixes(SIM_MODELS_DIR / "assets", {name}):
+                    print(f"[fix] {path}")
                 print(f"[skip] {name} (already installed)")
                 skipped.append(name)
                 continue
@@ -1415,6 +1470,12 @@ def main(config: PrepareConfig):
             "error: --sim-source/--sim-force only apply with --sim, --sim-task, "
             "--sim-bundle, --sim-package or --sim-data"
         )
+    if config.sim_fix_assets is not None:
+        replaced = apply_asset_fixes(config.sim_fix_assets.expanduser().resolve())
+        for path in replaced:
+            print(f"[fix] {path}")
+        print(f"[done] {len(replaced)} asset file(s) fixed in {config.sim_fix_assets}")
+        return
     cache = config.cache.expanduser().resolve()
     if config.dagger_checkpoint:
         fetch_dagger_checkpoints(cache, config.dagger_checkpoint)
